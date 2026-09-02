@@ -1,0 +1,10 @@
+executing config test boost
++ cd /d "C:\Users\SYS-ADMIN\OneDrive - Thekwini TVET College\Desktop\fritzing-app\config.tests\boost" && C:\Qt\6.5.3\mingw_64\bin\qmake.exe  -spec C:/Qt/6.5.3/mingw_64/mkspecs/win32-g++ "CONFIG -= qt debug_and_release app_bundle lib_bundle" "C:/Users/SYS-ADMIN/OneDrive - Thekwini TVET College/Desktop/fritzing-app/config.tests/boost"
++ cd /d "C:\Users\SYS-ADMIN\OneDrive - Thekwini TVET College\Desktop\fritzing-app\config.tests\boost" && set MAKEFLAGS=& mingw32-make
+> g++ -c -fno-keep-inline-dllexport -O2 -Wall -Wextra -Wextra -fexceptions -mthreads -DUNICODE -D_UNICODE -DWIN32 -DMINGW_HAS_SECURE_API=1 -I. -IC:/Qt/6.5.3/mingw_64/mkspecs/win32-g++  -o main.o main.cpp
+> main.cpp:1:10: fatal error: boost/version.hpp: No such file or directory
+>     1 | #include <boost/version.hpp>
+>       |          ^~~~~~~~~~~~~~~~~~~
+> compilation terminated.
+> mingw32-make: *** [Makefile:394: main.o] Error 1
+test boost FAILED
