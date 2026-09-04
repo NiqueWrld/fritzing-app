@@ -485,7 +485,7 @@ ConnectorItem * ConnectorItem::removeConnection(ItemBase * itemBase) {
 			restoreColor(visited);
 			if (itemBase) {
 				DebugDialog::debug(QString("remove from:%1 to:%2 count%3")
-						   .arg((long) this, 0, 16)
+						   .arg(reinterpret_cast<quintptr>(this), 0, 16)
 						   .arg(itemBase->modelPartShared()->title())
 						   .arg(m_connectedTo.count()) );
 			}
@@ -1976,7 +1976,7 @@ void ConnectorItem::debugInfo(const QString & msg)
 	            .arg(this->attachedToViewLayerPlacement())
 	            .arg(QVariant::fromValue(this->attachedTo()->wireFlags()).toString())
 	            .arg(this->m_hybrid)
-	            .arg((long) this->bus(), 0, 16)
+	            .arg(reinterpret_cast<quintptr>(this->bus()), 0, 16)
 	            .arg(this->m_radius)
 	            .arg(this->m_strokeWidth)
 	            .arg(p.x())

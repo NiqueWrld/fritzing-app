@@ -51,7 +51,7 @@ win32 {
     }
 
 	INCLUDEPATH += $$LIBGIT2INCLUDE
-    LIBS += -L$$LIBGIT2LIB -lgit2
+    LIBS += -L$$LIBGIT2LIB -lgit2 -lws2_32 -lsecur32
 }
 
 unix {
