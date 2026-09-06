@@ -22,6 +22,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include "debugdialog.h"
 #include "help/tipsandtricks.h"
 #include "utils/uploadpair.h"
+#include "utils/folderutils.h"
 #include "referencemodel/sqlitereferencemodel.h"
 
 #include <QTextEdit>
@@ -39,6 +40,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QDomNodeList>
 #include <QDomElement>
 #include <QFile>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -139,6 +141,19 @@ QJsonArray loadExerciseDefinitions() {
 	if (parseError.error != QJsonParseError::NoError || !document.isArray()) return {};
 
 	return document.array();
+}
+
+QString exercisePartIconPath(const QJsonObject &part) {
+	const QString icon = part.value("icon").toString();
+	if (icon.isEmpty()) return {};
+
+	const QString partsIconPath = FolderUtils::getAppPartsSubFolderPath(QString("svg/core/%1").arg(icon));
+	if (QFileInfo::exists(partsIconPath)) return partsIconPath;
+
+	const QString bundledIconPath = FolderUtils::getApplicationSubFolderPath(QString("resources/parts/svg/core/%1").arg(icon));
+	if (QFileInfo::exists(bundledIconPath)) return bundledIconPath;
+
+	return {};
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -588,7 +603,7 @@ QWidget * WelcomeView::initExercises() {
 	exerciseListWidget->setSelectionMode(QAbstractItemView::NoSelection);
 	exerciseListWidget->setFocusPolicy(Qt::NoFocus);
 
-	auto addExercise = [this, exerciseListWidget](const QString &level, const QString &name, const QString &goal, const char *signal) {
+	auto addExercise = [this, exerciseListWidget](const QString &level, const QString &name, const QString &goal, const QJsonArray &parts, const char *signal) {
 		auto * itemWidget = new QWidget;
 		auto * itemLayout = new QHBoxLayout;
 		itemLayout->setContentsMargins(6, 5, 6, 5);
@@ -611,6 +626,36 @@ QWidget * WelcomeView::initExercises() {
 		description->setObjectName("recentText");
 		description->setWordWrap(true);
 		textLayout->addWidget(description);
+
+		auto * partsLayout = new QHBoxLayout;
+		zeroMargin(partsLayout);
+		partsLayout->setSpacing(6);
+
+		for (const QJsonValue &partValue : parts) {
+			if (!partValue.isObject()) continue;
+
+			const QJsonObject part = partValue.toObject();
+			const QString iconPath = exercisePartIconPath(part);
+			if (iconPath.isEmpty()) continue;
+
+			QIcon icon(iconPath);
+			const QPixmap pixmap = icon.pixmap(28, 28);
+			if (pixmap.isNull()) continue;
+
+			auto * partIcon = new QLabel;
+			partIcon->setPixmap(pixmap);
+			partIcon->setFixedSize(32, 32);
+			partIcon->setAlignment(Qt::AlignCenter);
+
+			QString tooltip = part.value("role").toString();
+			const int quantity = part.value("quantity").toInt(1);
+			if (quantity > 1) tooltip = QString("%1 x%2").arg(tooltip).arg(quantity);
+			partIcon->setToolTip(tooltip);
+			partsLayout->addWidget(partIcon);
+		}
+
+		partsLayout->addStretch();
+		textLayout->addLayout(partsLayout);
 
 		itemLayout->addLayout(textLayout, 1);
 
@@ -641,11 +686,11 @@ QWidget * WelcomeView::initExercises() {
 		const QString goal = exercise.value("goal").toString();
 		if (id.isEmpty() || level.isEmpty() || title.isEmpty() || goal.isEmpty()) continue;
 
-		addExercise(level, title, goal, exerciseSignal(id));
+		addExercise(level, title, goal, exercise.value("parts").toArray(), exerciseSignal(id));
 	}
 
 	if (exerciseListWidget->count() == 0) {
-		addExercise(tr("Beginner"), tr("Build an LED Circuit"), tr("Learn polarity, current limiting, and a simple closed circuit."), SIGNAL(ledCircuitExercise()));
+		addExercise(tr("Beginner"), tr("Build an LED Circuit"), tr("Learn polarity, current limiting, and a simple closed circuit."), {}, SIGNAL(ledCircuitExercise()));
 	}
 
 	frameLayout->addWidget(exerciseListWidget);

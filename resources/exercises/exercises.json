@@ -3,24 +3,146 @@
     "id": "led-circuit",
     "level": "Beginner",
     "title": "Build an LED Circuit",
-    "goal": "Learn polarity, current limiting, and a simple closed circuit."
+    "goal": "Learn polarity, current limiting, and a simple closed circuit.",
+    "parts": [
+      {
+        "role": "breadboard",
+        "moduleId": "BreadboardModuleID",
+        "icon": "icon/breadboardicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "battery",
+        "moduleId": "77c36646df552e9fe72f360837f556ccleg",
+        "icon": "icon/Battery_block_9V82.svg",
+        "quantity": 1
+      },
+      {
+        "role": "led",
+        "moduleId": "LED-genedb611bf8177f41ac9c325217070f0c62ColorLEDModuleID",
+        "icon": "icon/LED-red-5mmicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "resistor",
+        "moduleId": "ResistorModuleID",
+        "icon": "icon/resistor_icon_220.svg",
+        "quantity": 1
+      }
+    ]
   },
   {
     "id": "voltage-divider",
     "level": "Beginner+",
     "title": "Voltage Divider",
-    "goal": "Use two resistors to create a lower signal voltage."
+    "goal": "Use two resistors to create a lower signal voltage.",
+    "parts": [
+      {
+        "role": "breadboard",
+        "moduleId": "BreadboardModuleID",
+        "icon": "icon/breadboardicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "battery",
+        "moduleId": "77c36646df552e9fe72f360837f556ccleg",
+        "icon": "icon/Battery_block_9V82.svg",
+        "quantity": 1
+      },
+      {
+        "role": "resistor",
+        "moduleId": "ResistorModuleID",
+        "icon": "icon/resistor_icon_220.svg",
+        "quantity": 2
+      }
+    ]
   },
   {
     "id": "transistor-switch",
     "level": "Intermediate",
     "title": "Transistor Switch",
-    "goal": "Control a load with a small signal and a transistor."
+    "goal": "Control a load with a small signal and a transistor.",
+    "parts": [
+      {
+        "role": "breadboard",
+        "moduleId": "BreadboardModuleID",
+        "icon": "icon/breadboardicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "battery",
+        "moduleId": "77c36646df552e9fe72f360837f556ccleg",
+        "icon": "icon/Battery_block_9V82.svg",
+        "quantity": 1
+      },
+      {
+        "role": "npn transistor",
+        "moduleId": "1238DBDC00",
+        "icon": "icon/powertransistor_npn_icon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "switch",
+        "moduleId": "1238DBDC00-toggle-switch",
+        "icon": "icon/basic_toggle_switch.svg",
+        "quantity": 1
+      },
+      {
+        "role": "led",
+        "moduleId": "LED-genedb611bf8177f41ac9c325217070f0c62ColorLEDModuleID",
+        "icon": "icon/LED-red-5mmicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "resistor",
+        "moduleId": "ResistorModuleID",
+        "icon": "icon/resistor_icon_220.svg",
+        "quantity": 2
+      }
+    ]
   },
   {
     "id": "555-touch-switch",
     "level": "Advanced",
     "title": "555 Touch Switch",
-    "goal": "Build a timed touch-trigger circuit around a 555 timer."
+    "goal": "Build a timed touch-trigger circuit around a 555 timer.",
+    "parts": [
+      {
+        "role": "breadboard",
+        "moduleId": "BreadboardModuleID",
+        "icon": "icon/breadboardicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "battery",
+        "moduleId": "77c36646df552e9fe72f360837f556ccleg",
+        "icon": "icon/Battery_block_9V82.svg",
+        "quantity": 1
+      },
+      {
+        "role": "555 timer",
+        "moduleId": "1001AAAB555Timer",
+        "icon": "icon/555timericon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "capacitor",
+        "moduleId": "SmallElectrolyticCapacitorModuleID",
+        "icon": "icon/electrolytic_capacitor_small_icon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "led",
+        "moduleId": "LED-genedb611bf8177f41ac9c325217070f0c62ColorLEDModuleID",
+        "icon": "icon/LED-red-5mmicon.svg",
+        "quantity": 1
+      },
+      {
+        "role": "resistor",
+        "moduleId": "ResistorModuleID",
+        "icon": "icon/resistor_icon_220.svg",
+        "quantity": 2
+      }
+    ]
   }
 ]
