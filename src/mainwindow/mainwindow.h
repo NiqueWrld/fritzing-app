@@ -313,6 +313,7 @@ protected Q_SLOTS:
 	void about();
 	void tipsAndTricks();
 	void firstTimeHelp();
+	void ledCircuitExercise();
 	void copy();
 	void cut();
 	void paste();
@@ -643,6 +644,7 @@ protected:
 	virtual void initLockedFiles(bool lockFiles);
 	virtual void initSketchWidgets(bool withIcons);
 	virtual void initWelcomeView();
+	virtual void initExercisesView();
 	virtual void initDock();
 	virtual void initMenus();
 	virtual void moreInitDock();
@@ -722,6 +724,7 @@ protected:
 
 	QPointer<SketchAreaWidget> m_welcomeWidget;
 	class WelcomeView * m_welcomeView = nullptr;
+	class WelcomeView * m_exercisesView = nullptr;
 
 	bool m_migrationCheckPending = false;
 
@@ -956,6 +959,7 @@ protected:
 	QAction *m_partsEditorHelpAct = nullptr;
 	QAction *m_tipsAndTricksAct = nullptr;
 	QAction *m_firstTimeHelpAct = nullptr;
+	QAction *m_ledCircuitExerciseAct = nullptr;
 
 	// Wire Color Menu
 	QMenu * m_breadboardWireColorMenu = nullptr;

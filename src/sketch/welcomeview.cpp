@@ -43,6 +43,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QStyleOption>
 #include <QStyle>
 #include <QApplication>
+#include <QPushButton>
 
 ////////////////////////////////////////////////////////////
 
@@ -398,7 +399,7 @@ QSize BlogListDelegate::sizeHint (const QStyleOptionViewItem &, const QModelInde
 
 //////////////////////////////////////
 
-WelcomeView::WelcomeView(QWidget * parent) : QFrame(parent)
+WelcomeView::WelcomeView(QWidget * parent, bool exercisesOnly) : QFrame(parent), m_exercisesOnly(exercisesOnly)
 {
 	this->setObjectName("welcomeView");
 
@@ -408,6 +409,9 @@ WelcomeView::WelcomeView(QWidget * parent) : QFrame(parent)
 	connect(this, SIGNAL(newSketch()), this->window(), SLOT(createNewSketch()));
 	connect(this, SIGNAL(openSketch()), this->window(), SLOT(mainLoad()));
 	connect(this, SIGNAL(recentSketch(const QString &, const QString &)), this->window(), SLOT(openRecentOrExampleFile(const QString &, const QString &)));
+	connect(this, SIGNAL(ledCircuitExercise()), this->window(), SLOT(ledCircuitExercise()));
+
+	if (m_exercisesOnly) return;
 
 	QString protocol = QSslSocket::supportsSsl() ? "https" : "http";
 	// TODO: blog network calls should only happen once, not for each window?
@@ -432,17 +436,27 @@ void WelcomeView::initLayout()
 	//mainLayout->setContentsMargins (0, 0, 0, 0);
 	mainLayout->setSizeConstraint (QLayout::SetMaximumSize);
 
+	if (m_exercisesOnly) {
+		mainLayout->addWidget(initExercises(), 0, 0);
+		mainLayout->setRowStretch(1, 1);
+		this->setLayout(mainLayout);
+		return;
+	}
+
 	QWidget * recent = initRecent();
 	mainLayout->addWidget(recent, 0, 0);
 
 	QWidget * widget = initBlog();
 	mainLayout->addWidget(widget, 0, 1);
 
+	widget = initExercises();
+	mainLayout->addWidget(widget, 1, 0);
+
 	widget = initShop();
 	mainLayout->addWidget(widget, 1, 1);
 
 	widget = initTip();
-	mainLayout->addWidget(widget, 1, 0);
+	mainLayout->addWidget(widget, 2, 0, 1, 2);
 
 
 	this->setLayout(mainLayout);
@@ -517,6 +531,29 @@ QWidget * WelcomeView::initRecent() {
 	//  frameLayout->addSpacerItem(new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding));
 
 	frame->setLayout(frameLayout);
+	return frame;
+}
+
+QWidget * WelcomeView::initExercises() {
+	auto * frame = new QFrame;
+	frame->setObjectName("exercisesFrame");
+	auto * layout = new QVBoxLayout;
+	zeroMargin(layout);
+
+	auto * title = new QLabel(tr("Exercises"));
+	title->setObjectName("recentTitle");
+	layout->addWidget(title);
+
+	auto * description = new QLabel(tr("Build an LED circuit"));
+	description->setWordWrap(true);
+	layout->addWidget(description);
+
+	auto * button = new QPushButton(tr("Start Exercise"));
+	connect(button, &QPushButton::clicked, this, &WelcomeView::ledCircuitExercise);
+	layout->addWidget(button, 0, Qt::AlignLeft);
+	layout->addStretch();
+
+	frame->setLayout(layout);
 	return frame;
 }
 

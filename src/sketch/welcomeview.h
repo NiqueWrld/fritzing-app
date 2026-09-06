@@ -135,7 +135,7 @@ class WelcomeView : public QFrame
 	Q_OBJECT
 
 public:
-	WelcomeView(QWidget * parent = 0);
+	WelcomeView(QWidget * parent = 0, bool exercisesOnly = false);
 	~WelcomeView() = default;
 
 	void showEvent(QShowEvent * event);
@@ -145,6 +145,7 @@ public:
 protected:
 	void initLayout();
 	QWidget * initRecent();
+	QWidget * initExercises();
 	QWidget * initBlog();
 	QWidget * initShop();
 	QWidget * initTip();
@@ -163,6 +164,7 @@ Q_SIGNALS:
 	void newSketch();
 	void openSketch();
 	void recentSketch(const QString & filename, const QString & actionText);
+	void ledCircuitExercise();
 
 protected Q_SLOTS:
 	void clickRecent(const QString &);
@@ -187,6 +189,7 @@ protected:
 	QLabel * m_blogLabel = nullptr;
 	QLabel * m_fabLabel = nullptr;
 	QLabel * m_shopLabel = nullptr;
+	bool m_exercisesOnly = false;
 
 	static QString m_activeHeaderLabelColor;
 	static QString m_inactiveHeaderLabelColor;

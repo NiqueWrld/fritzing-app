@@ -445,6 +445,7 @@ void MainWindow::init(ReferenceModel *referenceModel, bool lockFiles) {
 
 
 	initWelcomeView();
+	initExercisesView();
 	initSketchWidgets(true); // 14%
 	initProgrammingWidget();
 
@@ -3898,6 +3899,13 @@ void MainWindow::initWelcomeView() {
 	m_welcomeView->setObjectName("WelcomeView");
 	auto * sketchAreaWidget = new SketchAreaWidget(m_welcomeView, this, false, false);
 	addTab(sketchAreaWidget, ":/resources/images/icons/TabWidgetWelcomeActive_icon.png", tr("Welcome"), true);
+}
+
+void MainWindow::initExercisesView() {
+	m_exercisesView = new WelcomeView(this, true);
+	m_exercisesView->setObjectName("ExercisesView");
+	auto * sketchAreaWidget = new SketchAreaWidget(m_exercisesView, this, false, false);
+	addTab(sketchAreaWidget, tr("Exercises"));
 }
 
 void MainWindow::setInitialView() {

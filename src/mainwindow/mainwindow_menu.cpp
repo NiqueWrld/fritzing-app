@@ -642,6 +642,18 @@ void MainWindow::firstTimeHelp()
 	FirstTimeHelpDialog::showFirstTimeHelp();
 }
 
+void MainWindow::ledCircuitExercise()
+{
+	QMessageBox::information(this, tr("LED Circuit Exercise", "dialog title"),
+		tr("Build an LED circuit in Breadboard View:\n\n"
+		   "1. Create a new sketch.\n"
+		   "2. Add a breadboard, battery, LED, and resistor.\n"
+		   "3. Connect battery positive to the resistor.\n"
+		   "4. Connect the resistor to the LED's long leg.\n"
+		   "5. Connect the LED's short leg to battery negative.\n\n"
+		   "Then switch to Schematic View to compare the circuit and save your sketch."));
+}
+
 void MainWindow::createActions()
 {
 	createRaiseWindowActions();
@@ -1347,6 +1359,10 @@ void MainWindow::createHelpMenuActions() {
 	m_firstTimeHelpAct->setStatusTip(tr("Display First Time Help"));
 	connect(m_firstTimeHelpAct, SIGNAL(triggered()), this, SLOT(firstTimeHelp()));
 
+	m_ledCircuitExerciseAct = new QAction(tr("LED Circuit Exercise"), this);
+	m_ledCircuitExerciseAct->setStatusTip(tr("Open the beginner LED circuit exercise"));
+	connect(m_ledCircuitExerciseAct, SIGNAL(triggered()), this, SLOT(ledCircuitExercise()));
+
 	m_aboutQtAct = new QAction(tr("&About Qt"), this);
 	m_aboutQtAct->setStatusTip(tr("Show Qt's about box"));
 	connect(m_aboutQtAct, SIGNAL(triggered()), qApp, SLOT(aboutQt()));
@@ -1693,6 +1709,7 @@ void MainWindow::createHelpMenu()
 	m_helpMenu->addAction(m_aboutAct);
 	m_helpMenu->addAction(m_tipsAndTricksAct);
 	m_helpMenu->addAction(m_firstTimeHelpAct);
+	m_helpMenu->addAction(m_ledCircuitExerciseAct);
 #ifndef QT_NO_DEBUG
 	m_helpMenu->addAction(m_aboutQtAct);
 #endif
