@@ -644,6 +644,8 @@ void MainWindow::firstTimeHelp()
 
 void MainWindow::ledCircuitExercise()
 {
+	startExerciseMode(tr("Build an LED Circuit"));
+
 	QMessageBox::information(this, tr("LED Circuit Exercise", "dialog title"),
 		tr("Build an LED circuit in Breadboard View:\n\n"
 		   "1. Create a new sketch.\n"
@@ -656,6 +658,8 @@ void MainWindow::ledCircuitExercise()
 
 void MainWindow::voltageDividerExercise()
 {
+	startExerciseMode(tr("Voltage Divider"));
+
 	QMessageBox::information(this, tr("Voltage Divider Exercise", "dialog title"),
 		tr("Build a voltage divider in Breadboard View:\n\n"
 		   "1. Create a new sketch.\n"
@@ -668,6 +672,8 @@ void MainWindow::voltageDividerExercise()
 
 void MainWindow::transistorSwitchExercise()
 {
+	startExerciseMode(tr("Transistor Switch"));
+
 	QMessageBox::information(this, tr("Transistor Switch Exercise", "dialog title"),
 		tr("Build a transistor switch in Breadboard View:\n\n"
 		   "1. Create a new sketch.\n"
@@ -680,6 +686,8 @@ void MainWindow::transistorSwitchExercise()
 
 void MainWindow::timer555Exercise()
 {
+	startExerciseMode(tr("555 Touch Switch"));
+
 	QMessageBox::information(this, tr("555 Touch Switch Exercise", "dialog title"),
 		tr("Build a 555 touch switch in Breadboard View:\n\n"
 		   "1. Create a new sketch.\n"
@@ -1266,6 +1274,11 @@ void MainWindow::createViewMenuActions(bool showWelcome) {
 	m_showGridAct->setStatusTip(tr("Show the grid"));
 	m_showGridAct->setCheckable(true);
 	connect(m_showGridAct, SIGNAL(triggered()), this, SLOT(showGrid()));
+
+	m_exerciseModeAct = new QAction(tr("Exercise Mode"), this);
+	m_exerciseModeAct->setStatusTip(tr("Exercise mode starts from the Exercises tab"));
+	m_exerciseModeAct->setCheckable(true);
+	m_exerciseModeAct->setEnabled(false);
 
 	m_setGridSizeAct = new QAction(tr("Set Grid Size..."), this);
 	m_setGridSizeAct->setStatusTip(tr("Set the size of the grid in this view"));

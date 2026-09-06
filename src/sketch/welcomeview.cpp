@@ -603,7 +603,7 @@ QWidget * WelcomeView::initExercises() {
 	exerciseListWidget->setSelectionMode(QAbstractItemView::NoSelection);
 	exerciseListWidget->setFocusPolicy(Qt::NoFocus);
 
-	auto addExercise = [this, exerciseListWidget](const QString &, const QString &name, const QString &goal, const QJsonArray &parts, const char *signal) {
+	auto addExercise = [this, exerciseListWidget](const QString &, const QString &name, const QString &goal, bool usesBreadboard, bool usesSchematic, const QJsonArray &parts, const char *signal) {
 		auto * itemWidget = new QWidget;
 		auto * itemLayout = new QHBoxLayout;
 		itemLayout->setContentsMargins(6, 5, 6, 5);
@@ -613,9 +613,36 @@ QWidget * WelcomeView::initExercises() {
 		zeroMargin(textLayout);
 		textLayout->setSpacing(2);
 
+		auto * headingLayout = new QHBoxLayout;
+		zeroMargin(headingLayout);
+		headingLayout->setSpacing(6);
+
 		auto * heading = new QLabel(name);
 		heading->setObjectName("recentText");
-		textLayout->addWidget(heading);
+		headingLayout->addWidget(heading);
+
+		auto addViewIcon = [headingLayout](const QString &iconPath, const QString &tooltip) {
+			QIcon icon(iconPath);
+			const QPixmap pixmap = icon.pixmap(20, 20);
+			if (pixmap.isNull()) return;
+
+			auto * viewIcon = new QLabel;
+			viewIcon->setPixmap(pixmap);
+			viewIcon->setFixedSize(22, 22);
+			viewIcon->setAlignment(Qt::AlignCenter);
+			viewIcon->setToolTip(tooltip);
+			headingLayout->addWidget(viewIcon);
+		};
+
+		if (usesBreadboard) {
+			addViewIcon(":/resources/images/icons/TabWidgetBreadboardActive_icon.png", tr("Uses Breadboard View"));
+		}
+		if (usesSchematic) {
+			addViewIcon(":/resources/images/icons/TabWidgetSchematicActive_icon.png", tr("Uses Schematic View"));
+		}
+
+		headingLayout->addStretch();
+		textLayout->addLayout(headingLayout);
 
 		auto * description = new QLabel(goal);
 		description->setObjectName("recentText");
@@ -681,11 +708,11 @@ QWidget * WelcomeView::initExercises() {
 		const QString goal = exercise.value("goal").toString();
 		if (id.isEmpty() || level.isEmpty() || title.isEmpty() || goal.isEmpty()) continue;
 
-		addExercise(level, title, goal, exercise.value("parts").toArray(), exerciseSignal(id));
+		addExercise(level, title, goal, exercise.value("breadboard").toBool(), exercise.value("schematic").toBool(), exercise.value("parts").toArray(), exerciseSignal(id));
 	}
 
 	if (exerciseListWidget->count() == 0) {
-		addExercise(tr("Beginner"), tr("Build an LED Circuit"), tr("Learn polarity, current limiting, and a simple closed circuit."), {}, SIGNAL(ledCircuitExercise()));
+		addExercise(tr("Beginner"), tr("Build an LED Circuit"), tr("Learn polarity, current limiting, and a simple closed circuit."), true, true, {}, SIGNAL(ledCircuitExercise()));
 	}
 
 	frameLayout->addWidget(exerciseListWidget);

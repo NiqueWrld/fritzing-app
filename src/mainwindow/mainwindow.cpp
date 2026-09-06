@@ -1142,6 +1142,18 @@ SketchToolButton *MainWindow::createNoteButton(SketchAreaWidget *parent) {
 	return noteButton;
 }
 
+QWidget *MainWindow::createExerciseModeButton(SketchAreaWidget *parent) {
+	auto *button = new QToolButton(parent);
+	button->setObjectName("exerciseModeButton");
+	button->setIconSize(QSize(37, 24));
+	button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+	button->setDefaultAction(m_exerciseModeAct);
+	button->setText(tr("Exercise"));
+	button->setIcon(QIcon(QPixmap(":/resources/images/icons/TabWidgetExercisesActive_icon.svg")));
+	button->setToolTip(tr("Start an exercise from the Exercises tab"));
+	return button;
+}
+
 
 QWidget *MainWindow::createSimulationButton(SketchAreaWidget *parent) {
 	QStackedWidget* widget = new QStackedWidget(parent);
@@ -1254,7 +1266,7 @@ QList<QWidget*> MainWindow::getButtonsForView(ViewLayer::ViewID viewId) {
 	switch(viewId) {
 	case ViewLayer::BreadboardView:
 	case ViewLayer::SchematicView:
-		retval << createNoteButton(parent);
+		retval << createNoteButton(parent) << createExerciseModeButton(parent);
 	default:
 		break;
 	}
@@ -1353,6 +1365,15 @@ void MainWindow::createStatusBar()
 	// widgets that are visible when a message arrives), so "Ready" would
 	// overlap hints and suppress the bar until something else cleared it
 	statusMessage(tr("Ready"), StatusMessageTimeout);
+}
+
+void MainWindow::startExerciseMode(const QString &exerciseName)
+{
+	if (m_exerciseModeAct != nullptr) {
+		m_exerciseModeAct->setChecked(true);
+	}
+
+	statusMessage(tr("Exercise mode started: %1").arg(exerciseName), StatusMessageTimeout);
 }
 
 void MainWindow::tabWidget_currentChanged(int index) {

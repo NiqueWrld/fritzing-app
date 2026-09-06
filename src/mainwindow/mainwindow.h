@@ -588,6 +588,7 @@ protected:
 	QMenu *viewItemMenuAux(QMenu* menu);
 
 	void createZoomOptions(SketchAreaWidget* parent);
+	void startExerciseMode(const QString &exerciseName);
 	class SketchToolButton *createRotateButton(SketchAreaWidget *parent);
 	SketchToolButton *createShareButton(SketchAreaWidget *parent);
 	SketchToolButton *createFlipButton(SketchAreaWidget *parent);
@@ -599,6 +600,7 @@ protected:
 	class ExpandingLabel * createRoutingStatusLabel(SketchAreaWidget *);
 	SketchToolButton *createExportEtchableButton(SketchAreaWidget *parent);
 	SketchToolButton *createNoteButton(SketchAreaWidget *parent);
+	QWidget *createExerciseModeButton(SketchAreaWidget *parent);
 	QWidget *createSimulationButton(SketchAreaWidget *parent);
 
 	QWidget *createToolbarSpacer(SketchAreaWidget *parent);
@@ -887,6 +889,7 @@ protected:
 	QAction *m_100PercentSizeAct = nullptr;
 	QAction *m_alignToGridAct = nullptr;
 	QAction *m_showGridAct = nullptr;
+	QAction *m_exerciseModeAct = nullptr;
 	QAction *m_setGridSizeAct = nullptr;
 	QAction *m_setBackgroundColorAct = nullptr;
 	QAction *m_colorWiresByLengthAct = nullptr;
