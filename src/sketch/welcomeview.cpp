@@ -38,6 +38,10 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QDomDocument>
 #include <QDomNodeList>
 #include <QDomElement>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QBuffer>
 #include <QScrollArea>
 #include <QStyleOption>
@@ -116,6 +120,25 @@ QString cleanData(const QString & data) {
 		pos += listItem.size();
 	}
 	return listItems.join("");
+}
+
+const char *exerciseSignal(const QString &id) {
+	if (id == "led-circuit") return SIGNAL(ledCircuitExercise());
+	if (id == "voltage-divider") return SIGNAL(voltageDividerExercise());
+	if (id == "transistor-switch") return SIGNAL(transistorSwitchExercise());
+	if (id == "555-touch-switch") return SIGNAL(timer555Exercise());
+	return nullptr;
+}
+
+QJsonArray loadExerciseDefinitions() {
+	QFile file(":/resources/exercises/exercises.json");
+	if (!file.open(QIODevice::ReadOnly)) return {};
+
+	QJsonParseError parseError;
+	QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+	if (parseError.error != QJsonParseError::NoError || !document.isArray()) return {};
+
+	return document.array();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -410,6 +433,9 @@ WelcomeView::WelcomeView(QWidget * parent, bool exercisesOnly) : QFrame(parent),
 	connect(this, SIGNAL(openSketch()), this->window(), SLOT(mainLoad()));
 	connect(this, SIGNAL(recentSketch(const QString &, const QString &)), this->window(), SLOT(openRecentOrExampleFile(const QString &, const QString &)));
 	connect(this, SIGNAL(ledCircuitExercise()), this->window(), SLOT(ledCircuitExercise()));
+	connect(this, SIGNAL(voltageDividerExercise()), this->window(), SLOT(voltageDividerExercise()));
+	connect(this, SIGNAL(transistorSwitchExercise()), this->window(), SLOT(transistorSwitchExercise()));
+	connect(this, SIGNAL(timer555Exercise()), this->window(), SLOT(timer555Exercise()));
 
 	if (m_exercisesOnly) return;
 
@@ -537,23 +563,94 @@ QWidget * WelcomeView::initRecent() {
 QWidget * WelcomeView::initExercises() {
 	auto * frame = new QFrame;
 	frame->setObjectName("exercisesFrame");
-	auto * layout = new QVBoxLayout;
-	zeroMargin(layout);
+	auto * frameLayout = new QVBoxLayout;
+	zeroMargin(frameLayout);
+
+	auto * titleFrame = new QFrame;
+	titleFrame->setObjectName("recentTitleFrame");
+	auto * titleFrameLayout = new QHBoxLayout;
+	zeroMargin(titleFrameLayout);
 
 	auto * title = new QLabel(tr("Exercises"));
 	title->setObjectName("recentTitle");
-	layout->addWidget(title);
+	titleFrameLayout->addWidget(title);
+	titleFrame->setLayout(titleFrameLayout);
+	frameLayout->addWidget(titleFrame);
 
-	auto * description = new QLabel(tr("Build an LED circuit"));
-	description->setWordWrap(true);
-	layout->addWidget(description);
+	auto * intro = new QLabel(tr("Choose any level and build the circuit at your own pace."));
+	intro->setObjectName("recentText");
+	intro->setWordWrap(true);
+	frameLayout->addWidget(intro);
 
-	auto * button = new QPushButton(tr("Start Exercise"));
-	connect(button, &QPushButton::clicked, this, &WelcomeView::ledCircuitExercise);
-	layout->addWidget(button, 0, Qt::AlignLeft);
-	layout->addStretch();
+	auto * exerciseListWidget = new QListWidget;
+	exerciseListWidget->setObjectName("recentList");
+	exerciseListWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	exerciseListWidget->setSelectionMode(QAbstractItemView::NoSelection);
+	exerciseListWidget->setFocusPolicy(Qt::NoFocus);
 
-	frame->setLayout(layout);
+	auto addExercise = [this, exerciseListWidget](const QString &level, const QString &name, const QString &goal, const char *signal) {
+		auto * itemWidget = new QWidget;
+		auto * itemLayout = new QHBoxLayout;
+		itemLayout->setContentsMargins(6, 5, 6, 5);
+		itemLayout->setSpacing(8);
+
+		auto * levelLabel = new QLabel(level);
+		levelLabel->setObjectName("recentIcon");
+		levelLabel->setMinimumWidth(82);
+		itemLayout->addWidget(levelLabel);
+
+		auto * textLayout = new QVBoxLayout;
+		zeroMargin(textLayout);
+		textLayout->setSpacing(2);
+
+		auto * heading = new QLabel(name);
+		heading->setObjectName("recentText");
+		textLayout->addWidget(heading);
+
+		auto * description = new QLabel(goal);
+		description->setObjectName("recentText");
+		description->setWordWrap(true);
+		textLayout->addWidget(description);
+
+		itemLayout->addLayout(textLayout, 1);
+
+		auto * button = new QPushButton(tr("Start"));
+		button->setMinimumWidth(72);
+		if (signal != nullptr) {
+			connect(button, SIGNAL(clicked()), this, signal);
+		} else {
+			button->setEnabled(false);
+		}
+		itemLayout->addWidget(button, 0, Qt::AlignVCenter);
+
+		itemWidget->setLayout(itemLayout);
+
+		auto * item = new QListWidgetItem(exerciseListWidget);
+		item->setSizeHint(itemWidget->sizeHint());
+		exerciseListWidget->setItemWidget(item, itemWidget);
+	};
+
+	const QJsonArray exercises = loadExerciseDefinitions();
+	for (const QJsonValue &exerciseValue : exercises) {
+		if (!exerciseValue.isObject()) continue;
+
+		const QJsonObject exercise = exerciseValue.toObject();
+		const QString id = exercise.value("id").toString();
+		const QString level = exercise.value("level").toString();
+		const QString title = exercise.value("title").toString();
+		const QString goal = exercise.value("goal").toString();
+		if (id.isEmpty() || level.isEmpty() || title.isEmpty() || goal.isEmpty()) continue;
+
+		addExercise(level, title, goal, exerciseSignal(id));
+	}
+
+	if (exerciseListWidget->count() == 0) {
+		addExercise(tr("Beginner"), tr("Build an LED Circuit"), tr("Learn polarity, current limiting, and a simple closed circuit."), SIGNAL(ledCircuitExercise()));
+	}
+
+	frameLayout->addWidget(exerciseListWidget);
+
+	frame->setLayout(frameLayout);
 	return frame;
 }
 
@@ -970,7 +1067,11 @@ void WelcomeView::clickBlog(const QString & url) {
 
 
 void WelcomeView::readBlog(const QDomDocument & doc, bool doEmit, bool blog, const QString & prefix) {
+	if (m_exercisesOnly) return;
+
 	auto *listWidget = (blog) ? m_blogListWidget : m_projectListWidget;
+	if (listWidget == nullptr) return;
+
 	listWidget->clear();
 	listWidget->imageRequestList().clear();
 
@@ -1039,6 +1140,7 @@ void WelcomeView::readBlog(const QDomDocument & doc, bool doEmit, bool blog, con
 			auto * other = widget->findChild<WelcomeView *>();
 			if (!other) continue;
 			if (other == this) continue;
+			if (other->m_exercisesOnly) continue;
 
 			other->readBlog(doc, false, blog, prefix);
 		}
@@ -1046,7 +1148,11 @@ void WelcomeView::readBlog(const QDomDocument & doc, bool doEmit, bool blog, con
 }
 
 void WelcomeView::getNextBlogImage(int ix, bool blog) {
+	if (m_exercisesOnly) return;
+
 	BlogListWidget * listWidget = (blog) ? m_blogListWidget : m_projectListWidget;
+	if (listWidget == nullptr) return;
+
 	for (int i = ix; i < listWidget->imageRequestList().count(); i++) {
 		QString image = listWidget->imageRequestList().at(i);
 		if (image.isEmpty()) continue;
@@ -1060,6 +1166,8 @@ void WelcomeView::getNextBlogImage(int ix, bool blog) {
 }
 
 void WelcomeView::gotBlogImage(QNetworkReply * networkReply) {
+	if (m_exercisesOnly) return;
+
 	auto *manager = networkReply->manager();
 	if (!manager) return;
 
@@ -1077,6 +1185,7 @@ void WelcomeView::gotBlogImage(QNetworkReply * networkReply) {
 				auto *other = widget->findChild<WelcomeView *>();
 				if (!other) continue;
 				if (other == this) continue;
+				if (other->m_exercisesOnly) continue;
 
 				other->setBlogItemImage(scaled, index, blog);
 			}
@@ -1176,8 +1285,13 @@ void WelcomeView::blogItemClicked(QListWidgetItem * item) {
 }
 
 void WelcomeView::setBlogItemImage(QPixmap & pixmap, int index, bool blog) {
+	if (m_exercisesOnly) return;
+
 	// TODO: this is not totally thread-safe if there are multiple sketch widgets opened within a very short time
 	auto *listWidget = (blog) ? m_blogListWidget : m_projectListWidget;
+	if (listWidget == nullptr) return;
+	if (index < 0 || index >= listWidget->count()) return;
+
 	auto *item = listWidget->item(index);
 	if (item) {
 		item->setData(IconRole, pixmap);

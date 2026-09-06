@@ -4,6 +4,7 @@
         <file>resources/ratsnestcolors.xml</file>
         <file>resources/properties.xml</file>
         <file>resources/vias.xml</file>
+        <file>resources/exercises/exercises.json</file>
         <file>resources/images/splash/fhp_logo_small.png</file>
         <file>resources/images/splash/splash_progressbar.png</file>
         <file>resources/images/splash/fab_logo_bar.png</file>
@@ -58,6 +59,9 @@
         <file>resources/images/icons/TabWidgetWelcomeActive_icon.png</file>
         <file>resources/images/icons/TabWidgetWelcomeInactive_icon.png</file>
         <file>resources/images/icons/TabWidgetWelcomeHover_icon.png</file>
+        <file>resources/images/icons/TabWidgetExercisesActive_icon.svg</file>
+        <file>resources/images/icons/TabWidgetExercisesInactive_icon.svg</file>
+        <file>resources/images/icons/TabWidgetExercisesHover_icon.svg</file>
         <file>resources/images/icons/TabWidgetPcbActive_icon.png</file>
         <file>resources/images/icons/TabWidgetPcbInactive_icon.png</file>
         <file>resources/images/icons/TabWidgetPcbHover_icon.png</file>

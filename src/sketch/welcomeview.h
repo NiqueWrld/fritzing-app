@@ -165,6 +165,9 @@ Q_SIGNALS:
 	void openSketch();
 	void recentSketch(const QString & filename, const QString & actionText);
 	void ledCircuitExercise();
+	void voltageDividerExercise();
+	void transistorSwitchExercise();
+	void timer555Exercise();
 
 protected Q_SLOTS:
 	void clickRecent(const QString &);

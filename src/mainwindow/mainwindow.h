@@ -314,6 +314,9 @@ protected Q_SLOTS:
 	void tipsAndTricks();
 	void firstTimeHelp();
 	void ledCircuitExercise();
+	void voltageDividerExercise();
+	void transistorSwitchExercise();
+	void timer555Exercise();
 	void copy();
 	void cut();
 	void paste();

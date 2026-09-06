@@ -3905,7 +3905,7 @@ void MainWindow::initExercisesView() {
 	m_exercisesView = new WelcomeView(this, true);
 	m_exercisesView->setObjectName("ExercisesView");
 	auto * sketchAreaWidget = new SketchAreaWidget(m_exercisesView, this, false, false);
-	addTab(sketchAreaWidget, tr("Exercises"));
+	addTab(sketchAreaWidget, ":/resources/images/icons/TabWidgetExercisesActive_icon.svg", tr("Exercises"), true);
 }
 
 void MainWindow::setInitialView() {

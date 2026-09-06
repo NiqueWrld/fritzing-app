@@ -654,6 +654,42 @@ void MainWindow::ledCircuitExercise()
 		   "Then switch to Schematic View to compare the circuit and save your sketch."));
 }
 
+void MainWindow::voltageDividerExercise()
+{
+	QMessageBox::information(this, tr("Voltage Divider Exercise", "dialog title"),
+		tr("Build a voltage divider in Breadboard View:\n\n"
+		   "1. Create a new sketch.\n"
+		   "2. Add a breadboard, battery, and two resistors.\n"
+		   "3. Connect resistor one from battery positive to the middle node.\n"
+		   "4. Connect resistor two from the middle node to battery negative.\n"
+		   "5. Add labels for Vin, Vout, and GND.\n\n"
+		   "Challenge: try equal resistor values first, then change one value and predict Vout."));
+}
+
+void MainWindow::transistorSwitchExercise()
+{
+	QMessageBox::information(this, tr("Transistor Switch Exercise", "dialog title"),
+		tr("Build a transistor switch in Breadboard View:\n\n"
+		   "1. Create a new sketch.\n"
+		   "2. Add a breadboard, battery, NPN transistor, resistor, LED, and switch.\n"
+		   "3. Put the LED and current-limiting resistor in the collector path.\n"
+		   "4. Use the switch and a base resistor to drive the transistor base.\n"
+		   "5. Connect the emitter to ground.\n\n"
+		   "Goal: use a small control signal to switch a larger load path."));
+}
+
+void MainWindow::timer555Exercise()
+{
+	QMessageBox::information(this, tr("555 Touch Switch Exercise", "dialog title"),
+		tr("Build a 555 touch switch in Breadboard View:\n\n"
+		   "1. Create a new sketch.\n"
+		   "2. Add a 555 timer, resistors, capacitor, LED, and power connections.\n"
+		   "3. Wire the 555 power, ground, reset, trigger, threshold, and output pins.\n"
+		   "4. Connect the touch input to the trigger network.\n"
+		   "5. Connect the LED output through a resistor.\n\n"
+		   "Challenge: explain how the capacitor changes the output timing."));
+}
+
 void MainWindow::createActions()
 {
 	createRaiseWindowActions();
