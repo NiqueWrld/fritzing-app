@@ -4,6 +4,8 @@
     "level": "Beginner",
     "title": "Build an LED Circuit",
     "goal": "Learn polarity, current limiting, and a simple closed circuit.",
+    "breadboard": true,
+    "schematic": true,
     "parts": [
       {
         "role": "breadboard",
@@ -36,6 +38,8 @@
     "level": "Beginner+",
     "title": "Voltage Divider",
     "goal": "Use two resistors to create a lower signal voltage.",
+    "breadboard": true,
+    "schematic": true,
     "parts": [
       {
         "role": "breadboard",
@@ -62,6 +66,8 @@
     "level": "Intermediate",
     "title": "Transistor Switch",
     "goal": "Control a load with a small signal and a transistor.",
+    "breadboard": true,
+    "schematic": true,
     "parts": [
       {
         "role": "breadboard",
@@ -106,6 +112,8 @@
     "level": "Advanced",
     "title": "555 Touch Switch",
     "goal": "Build a timed touch-trigger circuit around a 555 timer.",
+    "breadboard": true,
+    "schematic": true,
     "parts": [
       {
         "role": "breadboard",

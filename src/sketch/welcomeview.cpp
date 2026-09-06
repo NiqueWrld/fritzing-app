@@ -603,16 +603,11 @@ QWidget * WelcomeView::initExercises() {
 	exerciseListWidget->setSelectionMode(QAbstractItemView::NoSelection);
 	exerciseListWidget->setFocusPolicy(Qt::NoFocus);
 
-	auto addExercise = [this, exerciseListWidget](const QString &level, const QString &name, const QString &goal, const QJsonArray &parts, const char *signal) {
+	auto addExercise = [this, exerciseListWidget](const QString &, const QString &name, const QString &goal, const QJsonArray &parts, const char *signal) {
 		auto * itemWidget = new QWidget;
 		auto * itemLayout = new QHBoxLayout;
 		itemLayout->setContentsMargins(6, 5, 6, 5);
 		itemLayout->setSpacing(8);
-
-		auto * levelLabel = new QLabel(level);
-		levelLabel->setObjectName("recentIcon");
-		levelLabel->setMinimumWidth(82);
-		itemLayout->addWidget(levelLabel);
 
 		auto * textLayout = new QVBoxLayout;
 		zeroMargin(textLayout);
