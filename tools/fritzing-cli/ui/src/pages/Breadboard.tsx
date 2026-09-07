@@ -64,7 +64,7 @@ export default function Breadboard() {
   }
 
   return (
-    <section className="flex h-[calc(100vh-11rem)] flex-col">
+    <section className="flex h-[calc(100vh-4rem)] flex-col">
       <div className="mb-4 flex items-center justify-between gap-4">
         <h2 className="text-lg font-medium">Breadboard view</h2>
         <div className="flex items-center gap-2">
@@ -114,7 +114,16 @@ export default function Breadboard() {
 
       {busy && <p className="mb-4 text-sm text-slate-400">Working…</p>}
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-800 bg-white">
+      <div
+        className="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-800 bg-white"
+        style={{
+          // Fritzing breadboard grid: 0.1in pitch, gridColor rgba(0,50,100,20/255)
+          backgroundImage:
+            'linear-gradient(to right, rgba(0,50,100,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,50,100,0.08) 1px, transparent 1px)',
+          backgroundSize: `${9.6 * zoom}px ${9.6 * zoom}px`,
+          backgroundAttachment: 'local',
+        }}
+      >
         {svg ? (
           <div
             className="origin-top-left p-4 [&_svg]:h-auto"
