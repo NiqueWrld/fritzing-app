@@ -193,7 +193,7 @@ function getPartsRoot(): string {
   return process.env.FRITZING_PARTS_PATH ?? resolve(repoRoot, '../fritzing-parts');
 }
 
-function runProcess(command: string, args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runProcess(command: string, args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolveProcess, reject) => {
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true });
     let stdout = '';

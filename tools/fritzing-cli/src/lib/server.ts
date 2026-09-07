@@ -10,6 +10,7 @@ import {
   readSketchModel,
   readSketchSummary,
   resolveWorkspacePath,
+  runProcess,
   snapshotProject
 } from './cli.js';
 
@@ -85,6 +86,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     case 'GET /api/instances': {
       sendJson(res, 200, { instances: await listRunningFritzingInstances() });
+      return;
+    }
+    case 'GET /api/browse': {
+      if (process.platform !== 'win32') {
+        throw new HttpError(501, 'Native file browsing is currently supported on Windows only.');
+      }
+      const initialDir = resolveWorkspacePath('sketches');
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$dialog = New-Object System.Windows.Forms.OpenFileDialog',
+        "$dialog.Filter = 'Fritzing sketches (*.fz;*.fzz)|*.fz;*.fzz|All files (*.*)|*.*'",
+        `$dialog.InitialDirectory = '${initialDir.replace(/'/g, "''")}'`,
+        'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }'
+      ].join('; ');
+      const result = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', script], process.cwd());
+      if (result.code !== 0) {
+        throw new HttpError(500, `File dialog failed: ${result.stderr.trim() || result.stdout.trim()}`);
+      }
+      const picked = result.stdout.trim();
+      sendJson(res, 200, { path: picked.length > 0 ? picked : null });
       return;
     }
     default:
