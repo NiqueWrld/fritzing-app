@@ -195,6 +195,9 @@ public:
 
 	void saveDocks();
 	void restoreDocks();
+	void ensureLiveProjectFolder();
+	void writeLiveProjectLog(const QString & message);
+	void refreshLiveProjectSvg();
 
 	void redrawSketch();
 
@@ -1013,6 +1016,9 @@ protected:
 	QPointer<class ProgramWindow> m_programView;
 	QList<LinkedFile *>  m_linkedProgramFiles;
 	QString m_backupFileNameAndPath;
+	QString m_liveProjectDirectory;
+	QString m_liveProjectSvgPath;
+	QString m_liveProjectLogPath;
 	QTimer m_autosaveTimer;
 	bool m_autosaveNeeded = false;
 	bool m_backingUp = false;

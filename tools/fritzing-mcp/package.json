@@ -1,13 +1,17 @@
 {
   "name": "fritzing-mcp",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
-  "description": "MCP server that exposes Fritzing project operations to GitHub Copilot.",
+  "description": "Simple Node CLI for working with Fritzing sketches, parts, and repository files.",
+  "bin": {
+    "fritzing-cli": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "mcp": "node dist/index.js --mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "latest",

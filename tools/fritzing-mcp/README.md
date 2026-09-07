@@ -1,20 +1,18 @@
-# Fritzing MCP Server
+# Fritzing CLI
 
-This package exposes a file-based Model Context Protocol server so GitHub Copilot can work with Fritzing source, parts, and sketch packages without starting Fritzing.
+This package now runs as a simple Node CLI for working with Fritzing sketches, parts, and repository files.
 
-## Tools
+It still supports the original MCP server mode when needed, but the default path is a plain command-line workflow that is easier to run and script.
 
-- `help`: show the available direct MCP tools, their key inputs, and the resolved repository root.
-- `read_file`: read a UTF-8 text file from the Fritzing repository.
-- `write_file`: create or replace a UTF-8 text file in the Fritzing repository.
-- `move_path`: move or rename a repository file or folder.
-- `delete_path`: delete a repository file or folder.
-- `find_parts`: find installed Fritzing part definitions and their `moduleId` values.
-- `update_parts_library`: update the configured official `fritzing-parts` Git repository.
-- `list_sketches`: list `.fz` and `.fzz` sketches in the workspace.
-- `inspect_sketch`: show basic file metadata and simple `.fz` XML counts.
-- `read_sketch_model`: extract editable `.fz` XML from a `.fz` file or `.fzz` package without starting Fritzing.
-- `write_sketch_model`: update the `.fz` model in a `.fz` file or `.fzz` package without starting Fritzing; creates a backup by default.
+## Commands
+
+- `help`: show the available commands and repository root.
+- `list-sketches --folder sketches --limit 20`: list `.fz` and `.fzz` files.
+- `inspect-sketch --path sketches/core/555TouchSwitch.fzz`: show metadata for a sketch.
+- `read-sketch-model --path sketches/core/555TouchSwitch.fzz`: print the embedded `.fz` XML.
+- `find-parts --query 555 --limit 10`: search installed part definitions.
+- `update-parts-library`: pull the configured official `fritzing-parts` repo.
+- `mcp`: start the MCP transport for Copilot integration.
 
 ## Setup
 
@@ -24,25 +22,27 @@ npm install
 npm run build
 ```
 
-VS Code can start the server from `.vscode/mcp.json`. Use the MCP server tools from Copilot Chat after dependencies are installed. Fritzing does not need to be built or running.
+Run the CLI directly:
+
+```powershell
+node dist/index.js list-sketches --folder sketches --limit 10
+node dist/index.js inspect-sketch --path sketches/core/555TouchSwitch.fzz
+```
+
+For the original Copilot/MCP flow:
+
+```powershell
+node dist/index.js --mcp
+```
 
 ## File Editing
 
-The file editing tools can create, replace, move, and delete repository files.
-They accept only paths inside the Fritzing repository root. Set `overwrite` or
-`recursive` explicitly when replacing an existing path or deleting a folder.
-
-## External Sketch Editing
-
-Use `read_sketch_model` and `write_sketch_model` to edit a local `.fz` or
-`.fzz` sketch package without a running Fritzing application. The write tool
-replaces only the embedded `.fz` model inside `.fzz`, preserving its other ZIP
-entries, and creates a `.bak` copy unless `createBackup` is set to `false`.
+The CLI can read and write repository files, and it can inspect or update sketch XML without requiring a running Fritzing window.
 
 ## Parts Management
 
-Use `find_parts` before creating a custom part. Run `update_parts_library` to
-pull additions from the configured official parts repository.
+Use `find-parts` before creating a custom part and `update-parts-library` to pull the official parts repo.
 
-Use the MCP `help` tool at any time to list the complete tool set, key inputs,
-and repository root.
+## Existing VS Code MCP config
+
+The workspace `.vscode/mcp.json` can still point to the JSON-RPC server if you want Copilot integration, but the simpler default is the CLI, which requires no MCP transport.

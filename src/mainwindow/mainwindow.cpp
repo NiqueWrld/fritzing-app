@@ -891,9 +891,90 @@ void MainWindow::connectPair(SketchWidget * signaller, SketchWidget * slotter)
 
 }
 
+void MainWindow::ensureLiveProjectFolder() {
+	if (m_fwFilename.isEmpty()) {
+		return;
+	}
+
+	const QFileInfo sketchInfo(m_fwFilename);
+	const QString projectDir = sketchInfo.absolutePath();
+	const QString projectName = sketchInfo.completeBaseName();
+	const QString liveDirPath = projectDir + "/." + projectName + "_live";
+	const QString liveSvgPath = liveDirPath + "/current.svg";
+	const QString liveLogPath = liveDirPath + "/log.txt";
+
+	QDir liveDir(liveDirPath);
+	if (!liveDir.exists()) {
+		liveDir.mkpath(liveDirPath);
+	}
+
+	QFile logFile(liveLogPath);
+	if (!logFile.exists()) {
+		if (logFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+			QTextStream stream(&logFile);
+			stream << "Fritzing live export log\n";
+			logFile.close();
+		}
+	}
+
+	m_liveProjectDirectory = liveDirPath;
+	m_liveProjectSvgPath = liveSvgPath;
+	m_liveProjectLogPath = liveLogPath;
+	refreshLiveProjectSvg();
+}
+
+void MainWindow::writeLiveProjectLog(const QString & message) {
+	if (m_liveProjectLogPath.isEmpty()) {
+		return;
+	}
+
+	QFile logFile(m_liveProjectLogPath);
+	if (!logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+		return;
+	}
+
+	QTextStream stream(&logFile);
+	stream << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << " - " << message << "\n";
+	logFile.close();
+}
+
+void MainWindow::refreshLiveProjectSvg() {
+	if (m_liveProjectDirectory.isEmpty() || m_liveProjectSvgPath.isEmpty() || m_currentGraphicsView == nullptr) {
+		return;
+	}
+
+	QDir liveDir(m_liveProjectDirectory);
+	if (!liveDir.exists()) {
+		liveDir.mkpath(m_liveProjectDirectory);
+	}
+
+	LayerList viewLayerIDs;
+	Q_FOREACH (ViewLayer * viewLayer, m_currentGraphicsView->viewLayers()) {
+		if (viewLayer == nullptr) continue;
+		if (!viewLayer->visible()) continue;
+		viewLayerIDs << viewLayer->viewLayerID();
+	}
+
+	RenderThing renderThing;
+	renderThing.printerScale = GraphicsUtils::SVGDPI;
+	renderThing.blackOnly = false;
+	renderThing.dpi = GraphicsUtils::StandardFritzingDPI;
+	renderThing.selectedItems = false;
+	renderThing.hideTerminalPoints = true;
+	renderThing.renderBlocker = false;
+	QString svg = m_currentGraphicsView->renderToSVGForSVGExport(renderThing, nullptr, viewLayerIDs);
+	if (svg.isEmpty()) {
+		return;
+	}
+
+	TextUtils::writeUtf8(m_liveProjectSvgPath, TextUtils::convertExtendedChars(svg));
+	writeLiveProjectLog(QString("SVG refreshed for %1").arg(m_fwFilename));
+}
+
 void MainWindow::setCurrentFile(const QString &filename, bool addToRecent, bool setAsLastOpened) {
 	setFileName(filename);
 	watchCurrentSketch();
+	ensureLiveProjectFolder();
 
 	if (setAsLastOpened) {
 		QSettings settings;
@@ -3405,6 +3486,9 @@ void MainWindow::autosaveNeeded(int index) {
 	Q_UNUSED(index);
 	//DebugDialog::debug(QString("Triggering autosave"));
 	m_autosaveNeeded = true;
+	if (!m_liveProjectDirectory.isEmpty()) {
+		refreshLiveProjectSvg();
+	}
 }
 
 /**
