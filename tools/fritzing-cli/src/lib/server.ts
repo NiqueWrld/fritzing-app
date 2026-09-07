@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import {
   findParts,
   findSketches,
+  getPartsRoot,
   getProjectLiveFolder,
   listPartsInSketch,
   listRunningFritzingInstances,
@@ -82,6 +83,41 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const query = requireParam(url, 'query');
       const limit = Number(url.searchParams.get('limit') ?? '25');
       sendJson(res, 200, { parts: await findParts(query, limit) });
+      return;
+    }
+    case 'GET /api/part/image': {
+      const fzpPathParam = url.searchParams.get('path');
+      const moduleId = url.searchParams.get('moduleId');
+      let fzpPath = fzpPathParam;
+      if (!fzpPath && moduleId) {
+        const matches = await findParts(moduleId, 10);
+        fzpPath = (matches.find(match => match.moduleId === moduleId) ?? matches[0])?.path;
+      }
+      if (!fzpPath) {
+        throw new HttpError(404, 'Part not found. Pass path or moduleId.');
+      }
+      const fzp = await readFile(fzpPath, 'utf8').catch(() => {
+        throw new HttpError(404, `Part definition not found: ${fzpPath}`);
+      });
+      const image = fzp.match(/<breadboardView>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
+      if (!image) {
+        throw new HttpError(404, 'Part has no breadboard image.');
+      }
+      // Images live at <partsRoot>/svg/<family>/<image>; family mirrors the fzp folder (core, contrib, obsolete).
+      const family = basename(dirname(fzpPath));
+      const imagePath = join(getPartsRoot(), 'svg', family, image);
+      const contentTypes: Record<string, string> = { '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg' };
+      const contentType = contentTypes[extname(image).toLowerCase()];
+      if (!contentType) {
+        throw new HttpError(415, `Unsupported part image type: ${image}`);
+      }
+      try {
+        const content = await readFile(imagePath);
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'max-age=3600' });
+        res.end(content);
+      } catch {
+        throw new HttpError(404, `Part image not found: ${imagePath}`);
+      }
       return;
     }
     case 'GET /api/instances': {

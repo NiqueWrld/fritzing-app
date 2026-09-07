@@ -189,7 +189,7 @@ export async function findParts(query: string, limit: number): Promise<Array<{ m
   return matches;
 }
 
-function getPartsRoot(): string {
+export function getPartsRoot(): string {
   return process.env.FRITZING_PARTS_PATH ?? resolve(repoRoot, '../fritzing-parts');
 }
 

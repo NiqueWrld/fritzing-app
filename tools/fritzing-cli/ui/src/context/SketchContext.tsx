@@ -7,8 +7,20 @@ type SketchContextValue = {
 
 const SketchContext = createContext<SketchContextValue | undefined>(undefined)
 
+const storageKey = 'fritzing.currentSketch'
+
 export function SketchProvider({ children }: { children: ReactNode }) {
-  const [currentSketch, setCurrentSketch] = useState<string>()
+  const [currentSketch, setCurrentSketchState] = useState<string | undefined>(
+    () => localStorage.getItem(storageKey) ?? undefined
+  )
+  const setCurrentSketch = (path?: string) => {
+    setCurrentSketchState(path)
+    if (path) {
+      localStorage.setItem(storageKey, path)
+    } else {
+      localStorage.removeItem(storageKey)
+    }
+  }
   return <SketchContext.Provider value={{ currentSketch, setCurrentSketch }}>{children}</SketchContext.Provider>
 }
 
