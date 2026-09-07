@@ -1056,12 +1056,17 @@ void MainWindow::reloadExternallyChangedSketch()
 	const QString changedFile = m_pendingExternalFileChange;
 	m_pendingExternalFileChange.clear();
 	if (changedFile.isEmpty() || changedFile != fileName()) return;
+	const QString cliUpdateMarker = changedFile + ".fritzing-cli-update";
+	const bool cliUpdate = QFileInfo::exists(cliUpdateMarker);
+	if (cliUpdate) {
+		QFile::remove(cliUpdateMarker);
+	}
 
 	const bool ignoreChange = m_ignoreNextSketchFileChange;
 	watchCurrentSketch();
 	if (ignoreChange) return;
 
-	if (isWindowModified()) {
+	if (isWindowModified() && !cliUpdate) {
 		QMessageBox messageBox(
 			QMessageBox::Question,
 			tr("File Changed", "dialog title"),

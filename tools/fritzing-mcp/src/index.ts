@@ -211,6 +211,52 @@ function runProcess(command: string, args: string[], cwd: string): Promise<{ cod
   });
 }
 
+type FritzingInstance = {
+  processId: number;
+  executablePath: string;
+  commandLine: string;
+  windowTitle: string;
+};
+
+async function listRunningFritzingInstances(): Promise<FritzingInstance[]> {
+  if (process.platform !== 'win32') {
+    throw new Error('running-instances is currently supported on Windows only.');
+  }
+
+  const script = [
+    "$processes = Get-CimInstance Win32_Process -Filter \"Name = 'Fritzing.exe'\" | ForEach-Object {",
+    '  [PSCustomObject]@{',
+    '    processId = $_.ProcessId',
+    '    executablePath = $_.ExecutablePath',
+    '    commandLine = $_.CommandLine',
+    '    windowTitle = $_.MainWindowTitle',
+    '  }',
+    '}',
+    '$processes | ConvertTo-Json -Compress'
+  ].join(EOL);
+  const result = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], process.cwd());
+  if (result.code !== 0) {
+    throw new Error(`Unable to inspect Fritzing processes: ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+
+  const output = result.stdout.trim();
+  if (!output || output === 'null') {
+    return [];
+  }
+
+  const parsed: unknown = JSON.parse(output);
+  const records = Array.isArray(parsed) ? parsed : [parsed];
+  return records.map((record): FritzingInstance => {
+    const item = record as Partial<FritzingInstance>;
+    return {
+      processId: Number(item.processId),
+      executablePath: item.executablePath ?? '(unavailable)',
+      commandLine: item.commandLine ?? '(unavailable)',
+      windowTitle: item.windowTitle ?? ''
+    };
+  });
+}
+
 server.registerTool(
   'help',
   {
@@ -237,6 +283,9 @@ server.registerTool(
       'Parts tools:',
       '- find_parts: query, limit? - find installed part definitions and moduleIds.',
       '- update_parts_library: pull the configured fritzing-parts Git repository to get the newest official parts.',
+      '',
+      'Process tools:',
+      '- running-instances: list active Windows Fritzing processes, including their PID, executable path, and launch command.',
       '',
       'Fritzing does not need to be running. Sketch tools directly edit .fz XML and the embedded .fz model in .fzz packages.',
       'Relative paths are resolved from the repository root. Repository file tools are restricted to this repository.'
@@ -581,17 +630,45 @@ function wirePartsInSketchXml(xml: string, options: {
 }
 
 function getProjectLiveFolder(projectPath: string): string {
-  return join(dirname(projectPath), '.fritzing-live');
+  return join(dirname(projectPath), `.${basename(projectPath, normalizeSketchExtension(projectPath))}_live`);
+}
+
+async function isProjectOpenInFritzing(projectPath: string): Promise<boolean> {
+  const projectFileName = basename(projectPath).toLowerCase();
+  const instances = await listRunningFritzingInstances();
+  return instances.some(instance => {
+    const matchingWindow = instance.windowTitle.toLowerCase().startsWith(`${projectFileName} - fritzing`);
+    const plainGuiLaunch = /^"[^"]*fritzing\.exe"\s*$/i.test(instance.commandLine);
+    return matchingWindow || plainGuiLaunch;
+  });
 }
 
 async function exportProjectSvg(projectPath: string): Promise<{ logPath: string; svgPath: string; exportDir: string }> {
   const exportDir = getProjectLiveFolder(projectPath);
+  const currentSvgPath = join(exportDir, 'current.svg');
+  const logPath = join(exportDir, 'log.txt');
   await mkdir(exportDir, { recursive: true });
+
+  const writeLog = async (status: string, result?: { code: number | null; stdout: string; stderr: string }): Promise<void> => {
+    const logText = [
+      `Project: ${projectPath}`,
+      `Generated: ${new Date().toISOString()}`,
+      `Export folder: ${exportDir}`,
+      `Current SVG: ${currentSvgPath}`,
+      `Status: ${status}`,
+      result ? `Fritzing exit code: ${result.code}` : '',
+      result ? `Stdout: ${result.stdout.trim() || '(empty)'}` : '',
+      result ? `Stderr: ${result.stderr.trim() || '(empty)'}` : ''
+    ].filter(Boolean).join(EOL);
+    await writeFile(logPath, logText, 'utf8');
+  };
+
+  await writeLog('Export started.');
 
   const existing = await readdir(exportDir).catch(() => []);
   for (const entry of existing) {
     const fullPath = join(exportDir, entry);
-    if (entry.toLowerCase().endsWith('.svg') || entry.toLowerCase() === 'project-log.txt' || entry.toLowerCase() === 'current.svg') {
+    if (entry.toLowerCase().endsWith('.svg') && entry.toLowerCase() !== 'current.svg') {
       await rm(fullPath, { recursive: true, force: true });
     }
   }
@@ -600,11 +677,13 @@ async function exportProjectSvg(projectPath: string): Promise<{ logPath: string;
   const appResourceFolder = resolve(repoRoot, 'resources');
   const result = await runProcess(fritzingExecutable, ['-f', appResourceFolder, '-svg', exportDir, projectPath], dirname(projectPath));
   if (result.code !== 0) {
+    await writeLog('Export failed.', result);
     throw new Error(`Fritzing export failed for ${projectPath}. Exit code: ${result.code}${EOL}${result.stderr || result.stdout}`);
   }
 
-  const svgFiles = (await readdir(exportDir)).filter(name => name.toLowerCase().endsWith('.svg'));
+  const svgFiles = (await readdir(exportDir)).filter(name => name.toLowerCase().endsWith('.svg') && name.toLowerCase() !== 'current.svg');
   if (svgFiles.length === 0) {
+    await writeLog('Export failed: no SVG file was generated.', result);
     throw new Error(`No SVG file was generated for ${projectPath}`);
   }
 
@@ -621,23 +700,12 @@ async function exportProjectSvg(projectPath: string): Promise<{ logPath: string;
   const newestSvg = svgMeta.sort((a, b) => b.time - a.time).at(0);
 
   if (!newestSvg) {
+    await writeLog('Export failed: no SVG export could be selected.', result);
     throw new Error(`No SVG export could be selected for ${projectPath}`);
   }
 
-  const currentSvgPath = join(exportDir, 'current.svg');
   await copyFile(newestSvg.fullPath, currentSvgPath);
-
-  const logPath = join(exportDir, 'project-log.txt');
-  const logText = [
-    `Project: ${projectPath}`,
-    `Generated: ${new Date().toISOString()}`,
-    `Export folder: ${exportDir}`,
-    `Current SVG: ${currentSvgPath}`,
-    `Fritzing exit code: ${result.code}`,
-    `Stdout: ${result.stdout.trim() || '(empty)'}`,
-    `Stderr: ${result.stderr.trim() || '(empty)'}`
-  ].join(EOL);
-  await writeFile(logPath, logText, 'utf8');
+  await writeLog('Export completed.', result);
 
   return { logPath, svgPath: currentSvgPath, exportDir };
 }
@@ -647,6 +715,19 @@ async function snapshotProject(projectPath: string): Promise<string> {
   console.log(`SVG snapshot updated: ${svgPath}`);
   console.log(`Log updated: ${logPath}`);
   return svgPath;
+}
+
+async function saveSketchAndSnapshot(sketchPath: string, xml: string): Promise<void> {
+  const projectIsOpen = await isProjectOpenInFritzing(sketchPath);
+  if (projectIsOpen) {
+    await writeFile(`${sketchPath}.fritzing-cli-update`, new Date().toISOString(), 'utf8');
+  }
+  await writeSketchModel(sketchPath, xml, true);
+  if (projectIsOpen) {
+    console.log('Saved sketch. The open Fritzing window will reload it and refresh the live SVG and log.');
+    return;
+  }
+  await snapshotProject(sketchPath);
 }
 
 async function listPartsInSketch(sketchPath: string): Promise<Array<{ title: string; moduleIdRef: string; path: string; x: string; y: string }>> {
@@ -681,6 +762,7 @@ function printCliUsage(): void {
     '  node dist/index.js read-sketch-model --path sketches/core/555TouchSwitch.fzz',
     '  node dist/index.js find-parts --query 555 --limit 10',
     '  node dist/index.js list-parts --path sketches/core/555TouchSwitch.fzz',
+    '  node dist/index.js running-instances',
     '  node dist/index.js update-parts-library',
     '  node dist/index.js add-part --path sketches/my-sketch.fzz --module-id resistor --title R1 --x 50 --y 20',
     '  node dist/index.js place-part --path sketches/my-sketch.fzz --title R1 --x 100 --y 80',
@@ -703,7 +785,10 @@ function printCliUsage(): void {
     '  --delay <ms>         Milliseconds to wait before re-exporting after a change event.',
     '  --overwrite          Allow replacing an existing file or destination path.',
     '  --recursive          Delete folders recursively.',
-    '  --mcp                Start the stdio MCP server instead of CLI mode.'
+    '  --mcp                Start the stdio MCP server instead of CLI mode.',
+    '',
+    'Commands:',
+    '  running-instances    List active Windows Fritzing processes with PID, executable, and launch command.'
   ];
   console.log(lines.join(EOL));
 }
@@ -800,7 +885,7 @@ async function runCli(argv: string[]): Promise<number> {
       const resolvedPath = resolveWorkspacePath(sketchPath);
       const xml = await readSketchModel(resolvedPath);
       const updatedXml = addPartToSketchXml(xml, { moduleIdRef: moduleId, title, x, y, path: `${moduleId}.fzp` });
-      await writeSketchModel(resolvedPath, updatedXml, true);
+      await saveSketchAndSnapshot(resolvedPath, updatedXml);
       console.log(`Added part '${title}' to ${resolvedPath}`);
       return 0;
     }
@@ -815,7 +900,7 @@ async function runCli(argv: string[]): Promise<number> {
       const resolvedPath = resolveWorkspacePath(sketchPath);
       const xml = await readSketchModel(resolvedPath);
       const updatedXml = placePartInSketchXml(xml, { title, x, y });
-      await writeSketchModel(resolvedPath, updatedXml, true);
+      await saveSketchAndSnapshot(resolvedPath, updatedXml);
       console.log(`Placed part '${title}' at (${x}, ${y}) in ${resolvedPath}`);
       return 0;
     }
@@ -833,7 +918,7 @@ async function runCli(argv: string[]): Promise<number> {
       const resolvedPath = resolveWorkspacePath(sketchPath);
       const xml = await readSketchModel(resolvedPath);
       const updatedXml = wirePartsInSketchXml(xml, { from, to, x1, y1, x2, y2 });
-      await writeSketchModel(resolvedPath, updatedXml, true);
+      await saveSketchAndSnapshot(resolvedPath, updatedXml);
       console.log(`Wired ${from} to ${to} in ${resolvedPath}`);
       return 0;
     }
@@ -849,6 +934,20 @@ async function runCli(argv: string[]): Promise<number> {
         return 0;
       }
       console.log(parts.map(part => `${part.title || '(untitled)'}${EOL}moduleIdRef: ${part.moduleIdRef || '(none)'}${EOL}path: ${part.path || '(none)'}${EOL}position: (${part.x}, ${part.y})`).join(`${EOL}${EOL}`));
+      return 0;
+    }
+    case 'running-instances': {
+      const instances = await listRunningFritzingInstances();
+      if (instances.length === 0) {
+        console.log('No running Fritzing instances found.');
+        return 0;
+      }
+      console.log(instances.map(instance => [
+        `PID: ${instance.processId}`,
+        `Executable: ${instance.executablePath}`,
+        `Window: ${instance.windowTitle || '(no window)'}`,
+        `Command line: ${instance.commandLine}`
+      ].join(EOL)).join(`${EOL}${EOL}`));
       return 0;
     }
     case 'snapshot-project': {
