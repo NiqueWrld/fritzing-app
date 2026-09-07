@@ -10,6 +10,7 @@ import { EOL } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as z from 'zod/v4';
+import { startHttpServer } from './server.js';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../../..');
@@ -31,7 +32,7 @@ const server = new McpServer({
   version: '0.1.0'
 });
 
-function resolveWorkspacePath(pathValue?: string): string {
+export function resolveWorkspacePath(pathValue?: string): string {
   if (!pathValue || pathValue.trim().length === 0) {
     return repoRoot;
   }
@@ -58,7 +59,7 @@ async function exists(pathValue: string): Promise<boolean> {
   }
 }
 
-async function findSketches(folder: string, limit: number, results: string[] = []): Promise<string[]> {
+export async function findSketches(folder: string, limit: number, results: string[] = []): Promise<string[]> {
   if (results.length >= limit) {
     return results;
   }
@@ -80,7 +81,7 @@ async function findSketches(folder: string, limit: number, results: string[] = [
   return results;
 }
 
-async function readSketchSummary(sketchPath: string): Promise<string> {
+export async function readSketchSummary(sketchPath: string): Promise<string> {
   const extension = normalizeSketchExtension(sketchPath);
   const fileStat = await stat(sketchPath);
   const lines = [
@@ -117,7 +118,7 @@ function sketchModelEntry(archive: AdmZip): string {
   return entry.entryName;
 }
 
-async function readSketchModel(sketchPath: string): Promise<string> {
+export async function readSketchModel(sketchPath: string): Promise<string> {
   const extension = normalizeSketchExtension(sketchPath);
   if (extension === '.fz') {
     return readFile(sketchPath, 'utf8');
@@ -157,7 +158,7 @@ async function writeSketchModel(sketchPath: string, xml: string, createBackup: b
   return sketchPath;
 }
 
-async function findParts(query: string, limit: number): Promise<Array<{ moduleId: string; title: string; path: string }>> {
+export async function findParts(query: string, limit: number): Promise<Array<{ moduleId: string; title: string; path: string }>> {
   const partsRoot = getPartsRoot();
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return [];
@@ -218,7 +219,7 @@ type FritzingInstance = {
   windowTitle: string;
 };
 
-async function listRunningFritzingInstances(): Promise<FritzingInstance[]> {
+export async function listRunningFritzingInstances(): Promise<FritzingInstance[]> {
   if (process.platform !== 'win32') {
     throw new Error('running-instances is currently supported on Windows only.');
   }
@@ -629,7 +630,7 @@ function wirePartsInSketchXml(xml: string, options: {
   return ensureInstancesElement(xml).replace(/<instances\s*>/i, `<instances>${block}`);
 }
 
-function getProjectLiveFolder(projectPath: string): string {
+export function getProjectLiveFolder(projectPath: string): string {
   return join(dirname(projectPath), `.${basename(projectPath, normalizeSketchExtension(projectPath))}_live`);
 }
 
@@ -710,7 +711,7 @@ async function exportProjectSvg(projectPath: string): Promise<{ logPath: string;
   return { logPath, svgPath: currentSvgPath, exportDir };
 }
 
-async function snapshotProject(projectPath: string): Promise<string> {
+export async function snapshotProject(projectPath: string): Promise<string> {
   const { svgPath, logPath } = await exportProjectSvg(projectPath);
   console.log(`SVG snapshot updated: ${svgPath}`);
   console.log(`Log updated: ${logPath}`);
@@ -730,7 +731,7 @@ async function saveSketchAndSnapshot(sketchPath: string, xml: string): Promise<v
   await snapshotProject(sketchPath);
 }
 
-async function listPartsInSketch(sketchPath: string): Promise<Array<{ title: string; moduleIdRef: string; path: string; x: string; y: string }>> {
+export async function listPartsInSketch(sketchPath: string): Promise<Array<{ title: string; moduleIdRef: string; path: string; x: string; y: string }>> {
   const xml = await readSketchModel(sketchPath);
   const entries = [...xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)];
   const parts = entries
@@ -769,6 +770,7 @@ function printCliUsage(): void {
     '  node dist/index.js wire-parts --path sketches/my-sketch.fzz --from R1:connector0 --to LED1:connector0',
     '  node dist/index.js snapshot-project --path sketches/core/555TouchSwitch.fzz',
     '  node dist/index.js watch-project --path sketches/core/555TouchSwitch.fzz --delay 500',
+    '  node dist/index.js serve --port 3000',
     '  node dist/index.js --mcp',
     '',
     'Options:',
@@ -783,6 +785,7 @@ function printCliUsage(): void {
     '  --from <ref>         Source connector reference like "R1:connector0".',
     '  --to <ref>           Destination connector reference like "LED1:connector1".',
     '  --delay <ms>         Milliseconds to wait before re-exporting after a change event.',
+    '  --port <number>      HTTP port for the UI server (default 3000).',
     '  --overwrite          Allow replacing an existing file or destination path.',
     '  --recursive          Delete folders recursively.',
     '  --mcp                Start the stdio MCP server instead of CLI mode.',
@@ -1010,6 +1013,12 @@ async function runCli(argv: string[]): Promise<number> {
 
       process.on('SIGINT', handleExit);
       process.on('SIGTERM', handleExit);
+      return 0;
+    }
+    case 'serve': {
+      const port = Number(options.get('--port') ?? '3000');
+      await startHttpServer(port);
+      console.log(`Fritzing CLI server listening on http://127.0.0.1:${port}`);
       return 0;
     }
     default:
