@@ -40,6 +40,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QPrinter>
 #include <QNetworkAccessManager>
 #include <QShortcut>
+#include <QFileSystemWatcher>
 
 #include "../model/modelpart.h"
 #include "../partseditor/peutils.h"
@@ -298,6 +299,7 @@ public Q_SLOTS:
 	void setGroundFillKeepout();
 	void oldSchematicsSlot(const QString & filename, bool & useOldSchematics);
 	void showWelcomeView();
+	void watchCurrentSketch(bool ignoreNextChange = false);
 	void putItemByModuleID(const QString & moduleID);
 	void handleFocusWidget(const QString &objectName, int index, const QString &property);
 	void onServicesFetched(const QStringList& services);
@@ -305,6 +307,8 @@ public Q_SLOTS:
 protected Q_SLOTS:
 	void mainLoad();
 	void revert();
+	void sketchFileChanged(const QString &path);
+	void reloadExternallyChangedSketch();
 	void openRecentOrExampleFile();
 	void openRecentOrExampleFile(const QString & filename, const QString & actionText);
 	void print();
@@ -715,6 +719,10 @@ protected:
 
 	QUndoGroup *m_undoGroup = nullptr;
 	QUndoView *m_undoView = nullptr;
+	QFileSystemWatcher m_sketchFileWatcher;
+	QTimer m_externalFileChangeTimer;
+	QString m_pendingExternalFileChange;
+	bool m_ignoreNextSketchFileChange = false;
 
 	QShortcut *m_undoShortcut;
 

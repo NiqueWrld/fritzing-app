@@ -850,6 +850,7 @@ bool MainWindow::saveAsAux(const QString & fileName) {
 
 	statusMessage(tr("Saved '%1'").arg(fileName), StatusMessageTimeout);
 	setCurrentFile(fileName, true, true);
+	watchCurrentSketch(true);
 
 	if(m_restarting && !m_fwFilename.isEmpty()) {
 		QSettings settings;

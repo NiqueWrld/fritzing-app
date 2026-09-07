@@ -296,6 +296,9 @@ MainWindow::MainWindow(ReferenceModel *referenceModel, QWidget * parent) :
 	m_backingUp = m_autosaveNeeded = false;
 	connect(&m_autosaveTimer, SIGNAL(timeout()), this, SLOT(backupSketch()));
 	m_autosaveTimer.start(AutosaveTimeoutMinutes * 60 * 1000);
+	m_externalFileChangeTimer.setSingleShot(true);
+	connect(&m_sketchFileWatcher, SIGNAL(fileChanged(const QString &)), this, SLOT(sketchFileChanged(const QString &)));
+	connect(&m_externalFileChangeTimer, SIGNAL(timeout()), this, SLOT(reloadExternallyChangedSketch()));
 
 	resize(MainWindowDefaultWidth, MainWindowDefaultHeight);
 
@@ -890,6 +893,7 @@ void MainWindow::connectPair(SketchWidget * signaller, SketchWidget * slotter)
 
 void MainWindow::setCurrentFile(const QString &filename, bool addToRecent, bool setAsLastOpened) {
 	setFileName(filename);
+	watchCurrentSketch();
 
 	if (setAsLastOpened) {
 		QSettings settings;
@@ -943,6 +947,56 @@ void MainWindow::setCurrentFile(const QString &filename, bool addToRecent, bool 
 		if (mainWin != nullptr)
 			mainWin->updateRecentFileActions();
 	}
+}
+
+void MainWindow::watchCurrentSketch(bool ignoreNextChange)
+{
+	const QString currentFile = fileName();
+	if (m_sketchFileWatcher.files() != QStringList{currentFile}) {
+		m_sketchFileWatcher.removePaths(m_sketchFileWatcher.files());
+		if (QFileInfo::exists(currentFile)) {
+			m_sketchFileWatcher.addPath(currentFile);
+		}
+	}
+
+	m_ignoreNextSketchFileChange = ignoreNextChange;
+}
+
+void MainWindow::sketchFileChanged(const QString &path)
+{
+	if (path != fileName()) return;
+
+	m_pendingExternalFileChange = path;
+	m_externalFileChangeTimer.start(250);
+}
+
+void MainWindow::reloadExternallyChangedSketch()
+{
+	const QString changedFile = m_pendingExternalFileChange;
+	m_pendingExternalFileChange.clear();
+	if (changedFile.isEmpty() || changedFile != fileName()) return;
+
+	const bool ignoreChange = m_ignoreNextSketchFileChange;
+	watchCurrentSketch();
+	if (ignoreChange) return;
+
+	if (isWindowModified()) {
+		QMessageBox messageBox(
+			QMessageBox::Question,
+			tr("File Changed", "dialog title"),
+			tr("'%1' was changed outside Fritzing. Reload and discard your unsaved changes?").arg(QFileInfo(changedFile).fileName()),
+			QMessageBox::NoButton,
+			this
+		);
+		QPushButton *reloadButton = messageBox.addButton(tr("Reload"), QMessageBox::AcceptRole);
+		messageBox.addButton(QMessageBox::Cancel);
+		messageBox.exec();
+		if (messageBox.clickedButton() != reloadButton) {
+			return;
+		}
+	}
+
+	revertAux();
 }
 
 

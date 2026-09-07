@@ -5,7 +5,9 @@
       "command": "node",
       "args": ["tools/fritzing-mcp/dist/index.js"],
       "env": {
-        "FRITZING_EXECUTABLE": "C:\\Users\\SYS-ADMIN\\OneDrive - Thekwini TVET College\\Desktop\\fritzing-app\\build\\debug32\\Fritzing.exe"
+        "FRITZING_EXECUTABLE": "C:\\Users\\SYS-ADMIN\\OneDrive - Thekwini TVET College\\Desktop\\fritzing-app\\build\\debug32\\Fritzing.exe",
+        "FRITZING_PARTS_PATH": "C:\\Users\\SYS-ADMIN\\OneDrive - Thekwini TVET College\\Desktop\\fritzing-parts",
+        "FRITZING_FTESTING_PORT": "17999"
       }
     }
   }
