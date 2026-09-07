@@ -3,7 +3,7 @@
     "fritzing-workspace": {
       "type": "stdio",
       "command": "node",
-      "args": ["tools/fritzing-mcp/dist/index.js"],
+      "args": ["tools/fritzing-cli/dist/index.js"],
       "env": {
         "FRITZING_EXECUTABLE": "C:\\Program Files\\Fritzing\\Fritzing.exe",
         "FRITZING_PARTS_PATH": "C:\\Users\\SYS-ADMIN\\OneDrive - Thekwini TVET College\\Desktop\\fritzing-parts",

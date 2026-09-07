@@ -260,12 +260,12 @@ async function listRunningFritzingInstances(): Promise<FritzingInstance[]> {
 server.registerTool(
   'help',
   {
-    description: 'Describe the direct Fritzing MCP tools and repository paths.',
+    description: 'Describe the Fritzing CLI tools and repository paths.',
     inputSchema: z.object({})
   },
   async () => {
     const lines = [
-      'Fritzing MCP Server',
+      'Fritzing CLI',
       `Repository root: ${repoRoot}`,
       '',
       'Repository file tools:',

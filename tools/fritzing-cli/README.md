@@ -17,7 +17,7 @@ It still supports the original MCP server mode when needed, but the default path
 ## Setup
 
 ```powershell
-cd tools/fritzing-mcp
+cd tools/fritzing-cli
 npm install
 npm run build
 ```
