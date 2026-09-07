@@ -1,5 +1,5 @@
-import { CameraIcon, FrameCornersIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
-import { useCallback, useEffect, useState } from 'react'
+import { CameraIcon, CornersInIcon, FrameCornersIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
 import { useTheme } from '../context/ThemeContext'
@@ -14,13 +14,87 @@ async function fetchSvg(sketchPath: string): Promise<string> {
   return response.text()
 }
 
+type DiagramPart = { moduleIdRef: string; title: string; x: number; y: number; z: number }
+type DiagramWire = { x1: number; y1: number; x2: number; y2: number; color: string; width: number }
+type Diagram = { parts: DiagramPart[]; wires: DiagramWire[] }
+
+// Fritzing scene units are 90dpi; browsers render SVG physical units at 96dpi.
+const sceneScale = 90 / 96
+
 export default function Breadboard() {
   const { currentSketch } = useSketch()
   const { theme } = useTheme()
+  const [mode, setMode] = useState<'live' | 'snapshot'>('live')
+  const [diagram, setDiagram] = useState<Diagram>()
   const [svg, setSvg] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const canvasRef = useRef<HTMLDivElement>(null)
+
+  // Internal widgets (notes, rulers, logos) have no part SVG in the parts library.
+  const internalModules = useMemo(() => new Set(['NoteModuleID', 'RulerModuleID', 'LogoImageModuleID']), [])
+  const liveBounds = useMemo(() => {
+    if (!diagram) return undefined
+    const drawableParts = diagram.parts.filter(part => !internalModules.has(part.moduleIdRef))
+    const xs = [...drawableParts.map(p => p.x), ...diagram.wires.flatMap(w => [w.x1, w.x2])]
+    const ys = [...drawableParts.map(p => p.y), ...diagram.wires.flatMap(w => [w.y1, w.y2])]
+    // Scene coordinates can be negative; shift the origin like adjustSceneRect does.
+    const margin = 40
+    const offsetX = Math.min(0, ...xs) - margin
+    const offsetY = Math.min(0, ...ys) - margin
+    return {
+      drawableParts,
+      offsetX,
+      offsetY,
+      width: Math.max(0, ...xs) - offsetX + 400,
+      height: Math.max(0, ...ys) - offsetY + 400,
+    }
+  }, [diagram, internalModules])
+
+  const zoomToFit = () => {
+    const canvas = canvasRef.current
+    const content = canvas?.querySelector<HTMLElement>('[data-canvas-content]')
+    if (!canvas || !content) return
+    // calculateVisibleItemsBoundingRect: union of the actual item bounds (parts and wire lines).
+    let elements: Element[] = [...content.querySelectorAll('img'), ...content.querySelectorAll('line')]
+    if (elements.length === 0) elements = [...content.querySelectorAll('svg')]
+    const origin = content.getBoundingClientRect()
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const element of elements) {
+      const rect = element.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) continue
+      minX = Math.min(minX, rect.left)
+      minY = Math.min(minY, rect.top)
+      maxX = Math.max(maxX, rect.right)
+      maxY = Math.max(maxY, rect.bottom)
+    }
+    if (!Number.isFinite(minX)) return
+    // Back to scene units at zoom 1.
+    const itemsRect = {
+      x: (minX - origin.left) / zoom,
+      y: (minY - origin.top) / zoom,
+      width: (maxX - minX) / zoom,
+      height: (maxY - minY) / zoom,
+    }
+    // SketchWidget::fitInWindow adds a 3% border around the items.
+    const borderFactor = 0.03
+    itemsRect.x -= itemsRect.width * borderFactor
+    itemsRect.y -= itemsRect.height * borderFactor
+    itemsRect.width *= 1 + 2 * borderFactor
+    itemsRect.height *= 1 + 2 * borderFactor
+    const fit = Math.min(canvas.clientWidth / itemsRect.width, canvas.clientHeight / itemsRect.height)
+    const newZoom = Math.min(4, Math.max(0.25, fit))
+    setZoom(newZoom)
+    // fitInView(KeepAspectRatio) centers the rect in the viewport.
+    requestAnimationFrame(() => {
+      canvas.scrollLeft = itemsRect.x * newZoom - (canvas.clientWidth - itemsRect.width * newZoom) / 2
+      canvas.scrollTop = itemsRect.y * newZoom - (canvas.clientHeight - itemsRect.height * newZoom) / 2
+    })
+  }
 
   const loadSvg = useCallback(() => {
     if (!currentSketch) return
@@ -37,7 +111,25 @@ export default function Breadboard() {
       .finally(() => setBusy(false))
   }, [currentSketch])
 
-  useEffect(loadSvg, [loadSvg])
+  const loadDiagram = useCallback(() => {
+    if (!currentSketch) return
+    setBusy(true)
+    fetchJson<Diagram>(`/api/sketch/diagram?path=${encodeURIComponent(currentSketch)}`)
+      .then(data => {
+        setDiagram(data)
+        setError(undefined)
+      })
+      .catch((requestError: Error) => {
+        setDiagram(undefined)
+        setError(requestError.message)
+      })
+      .finally(() => setBusy(false))
+  }, [currentSketch])
+
+  useEffect(() => {
+    if (mode === 'live') loadDiagram()
+    else loadSvg()
+  }, [mode, loadDiagram, loadSvg])
 
   const takeSnapshot = () => {
     if (!currentSketch) return
@@ -70,6 +162,18 @@ export default function Breadboard() {
       <div className="mb-4 flex items-center justify-between gap-4">
         <h2 className="text-lg font-medium">Breadboard view</h2>
         <div className="flex items-center gap-2">
+          <div className={`flex overflow-hidden rounded-lg border ${theme.secondary.border}`}>
+            {(['live', 'snapshot'] as const).map(candidate => (
+              <button
+                key={candidate}
+                type="button"
+                onClick={() => setMode(candidate)}
+                className={`px-3 py-2 text-sm transition ${mode === candidate ? theme.primary.active : theme.tint.muted}`}
+              >
+                {candidate === 'live' ? 'Live' : 'Snapshot'}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={() => setZoom(current => Math.max(0.25, current - 0.25))}
@@ -97,13 +201,24 @@ export default function Breadboard() {
           </button>
           <button
             type="button"
-            onClick={takeSnapshot}
-            disabled={busy}
-            className={`flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
+            onClick={zoomToFit}
+            className={`rounded-lg border ${theme.secondary.border} p-2 transition ${theme.primary.hoverBorder}`}
+            aria-label="Zoom to fit"
+            title="Zoom to fit"
           >
-            <CameraIcon size={18} />
-            Snapshot
+            <CornersInIcon size={18} />
           </button>
+          {mode === 'snapshot' && (
+            <button
+              type="button"
+              onClick={takeSnapshot}
+              disabled={busy}
+              className={`flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
+            >
+              <CameraIcon size={18} />
+              Snapshot
+            </button>
+          )}
         </div>
       </div>
 
@@ -117,6 +232,7 @@ export default function Breadboard() {
       {busy && <p className={`mb-4 text-sm ${theme.tint.muted}`}>Working…</p>}
 
       <div
+        ref={canvasRef}
         className={`min-h-0 flex-1 overflow-auto rounded-xl border ${theme.secondary.borderSoft} ${theme.secondary.canvasBg}`}
         style={{
           // Fritzing breadboard grid: 0.1in pitch, gridColor from theme
@@ -125,15 +241,51 @@ export default function Breadboard() {
           backgroundAttachment: 'local',
         }}
       >
-        {svg ? (
+        {mode === 'live' && diagram && liveBounds && (() => {
+          const { drawableParts, width, height, offsetX, offsetY } = liveBounds
+          return (
+            <div data-canvas-content className="relative origin-top-left" style={{ transform: `scale(${zoom})`, width, height }}>
+              {drawableParts.map((part, index) => (
+                <img
+                  key={`${part.moduleIdRef}-${index}`}
+                  src={`/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`}
+                  alt={part.title}
+                  title={part.title}
+                  className="absolute origin-top-left"
+                  style={{ left: part.x - offsetX, top: part.y - offsetY, transform: `scale(${sceneScale})` }}
+                  onError={event => (event.currentTarget.style.display = 'none')}
+                />
+              ))}
+              <svg className="pointer-events-none absolute left-0 top-0" width={width} height={height}>
+                {diagram.wires.map((wire, index) => (
+                  <line
+                    key={index}
+                    x1={wire.x1 - offsetX}
+                    y1={wire.y1 - offsetY}
+                    x2={wire.x2 - offsetX}
+                    y2={wire.y2 - offsetY}
+                    stroke={wire.color}
+                    strokeWidth={wire.width}
+                    strokeLinecap="round"
+                  />
+                ))}
+              </svg>
+            </div>
+          )
+        })()}
+        {mode === 'live' && !diagram && !busy && (
+          <p className={`p-4 text-sm ${theme.tint.faint}`}>No diagram data for this sketch.</p>
+        )}
+        {mode === 'snapshot' && (svg ? (
           <div
+            data-canvas-content
             className="origin-top-left p-4 [&_svg]:h-auto"
             style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%` }}
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         ) : (
           !busy && <p className={`p-4 text-sm ${theme.tint.faint}`}>No snapshot yet. Use Snapshot to export this sketch.</p>
-        )}
+        ))}
       </div>
     </section>
   )

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { basename, dirname, extname, join } from 'node:path';
 import {
@@ -14,6 +14,32 @@ import {
   runProcess,
   snapshotProject
 } from './cli.js';
+
+// Parts live in the external fritzing-parts repo and the app's bundled resources/parts.
+function getPartsRoots(): string[] {
+  return [getPartsRoot(), resolveWorkspacePath('resources/parts')];
+}
+
+const moduleIdCache = new Map<string, string>();
+
+async function findFzpByModuleId(moduleId: string): Promise<string | undefined> {
+  const cached = moduleIdCache.get(moduleId);
+  if (cached) return cached;
+  for (const root of getPartsRoots()) {
+    const entries = await readdir(root, { recursive: true, withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || extname(entry.name).toLowerCase() !== '.fzp') continue;
+      const fzpPath = join(entry.parentPath, entry.name);
+      const content = await readFile(fzpPath, 'utf8').catch(() => '');
+      const foundId = content.match(/<module\b[^>]*\bmoduleId="([^"]+)"/i)?.[1];
+      if (foundId && !moduleIdCache.has(foundId)) {
+        moduleIdCache.set(foundId, fzpPath);
+      }
+      if (foundId === moduleId) return fzpPath;
+    }
+  }
+  return undefined;
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -62,6 +88,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 200, { parts: await listPartsInSketch(sketchPath) });
       return;
     }
+    case 'GET /api/sketch/diagram': {
+      // Mirrors SketchWidget::loadFromModelParts: each instance is placed at its
+      // breadboardView <geometry x y z>; wires run from (x+x1,y+y1) to (x+x2,y+y2).
+      const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      const xml = await readSketchModel(sketchPath);
+      const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number }> = [];
+      const wires: Array<{ x1: number; y1: number; x2: number; y2: number; color: string; width: number }> = [];
+      for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
+        const attrs = match[1] ?? '';
+        const body = match[2] ?? '';
+        const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
+        const title = (body.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim();
+        const view = body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1];
+        if (!view) continue;
+        const geometryAttrs = view.match(/<geometry\b([^>]*?)\/?>/i)?.[1] ?? '';
+        const num = (name: string) => Number(geometryAttrs.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1] ?? '0');
+        const x = num('x');
+        const y = num('y');
+        const isWire = /\bwireFlags="/i.test(geometryAttrs) || moduleIdRef.toLowerCase().includes('wiremoduleid');
+        if (isWire) {
+          const color = view.match(/<wireExtras[^>]*\bcolor="([^"]+)"/i)?.[1] ?? '#404040';
+          const width = Number(view.match(/<wireExtras[^>]*\bwidth="([^"]+)"/i)?.[1] ?? '3');
+          wires.push({ x1: x + num('x1'), y1: y + num('y1'), x2: x + num('x2'), y2: y + num('y2'), color, width });
+        } else {
+          parts.push({ moduleIdRef, title, x, y, z: num('z') });
+        }
+      }
+      parts.sort((a, b) => a.z - b.z);
+      sendJson(res, 200, { parts, wires });
+      return;
+    }
     case 'GET /api/sketch/svg': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       const svgPath = join(getProjectLiveFolder(sketchPath), 'current.svg');
@@ -88,10 +145,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     case 'GET /api/part/image': {
       const fzpPathParam = url.searchParams.get('path');
       const moduleId = url.searchParams.get('moduleId');
-      let fzpPath = fzpPathParam;
+      let fzpPath: string | undefined = fzpPathParam ?? undefined;
       if (!fzpPath && moduleId) {
-        const matches = await findParts(moduleId, 10);
-        fzpPath = (matches.find(match => match.moduleId === moduleId) ?? matches[0])?.path;
+        fzpPath = await findFzpByModuleId(moduleId);
       }
       if (!fzpPath) {
         throw new HttpError(404, 'Part not found. Pass path or moduleId.');
@@ -99,26 +155,30 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const fzp = await readFile(fzpPath, 'utf8').catch(() => {
         throw new HttpError(404, `Part definition not found: ${fzpPath}`);
       });
-      const image = fzp.match(/<breadboardView>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
+      const image = fzp.match(/<breadboardView\b[^>]*>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
       if (!image) {
         throw new HttpError(404, 'Part has no breadboard image.');
       }
       // Images live at <partsRoot>/svg/<family>/<image>; family mirrors the fzp folder (core, contrib, obsolete).
       const family = basename(dirname(fzpPath));
-      const imagePath = join(getPartsRoot(), 'svg', family, image);
       const contentTypes: Record<string, string> = { '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg' };
       const contentType = contentTypes[extname(image).toLowerCase()];
       if (!contentType) {
         throw new HttpError(415, `Unsupported part image type: ${image}`);
       }
-      try {
-        const content = await readFile(imagePath);
-        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'max-age=3600' });
-        res.end(content);
-      } catch {
-        throw new HttpError(404, `Part image not found: ${imagePath}`);
+      const candidates = getPartsRoots().flatMap(root => [
+        join(root, 'svg', family, image),
+        join(root, 'svg', 'core', image)
+      ]);
+      for (const imagePath of candidates) {
+        const content = await readFile(imagePath).catch(() => undefined);
+        if (content) {
+          res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'max-age=3600' });
+          res.end(content);
+          return;
+        }
       }
-      return;
+      throw new HttpError(404, `Part image not found for ${basename(fzpPath)}: ${image}`);
     }
     case 'GET /api/instances': {
       sendJson(res, 200, { instances: await listRunningFritzingInstances() });
