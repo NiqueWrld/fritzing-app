@@ -1,9 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { connect } from 'node:net';
 import { EOL } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,15 +12,6 @@ import * as z from 'zod/v4';
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../..');
 const sketchExtensions = new Set(['.fz', '.fzz']);
-const exportFlags = {
-  svg: '-svg',
-  gerber: '-g',
-  all: '-all'
-} as const;
-
-type ExportFormat = keyof typeof exportFlags;
-type SketchView = 'Breadboard' | 'Schematic' | 'PCB';
-const defaultTestingPort = Number.parseInt(process.env.FRITZING_FTESTING_PORT ?? '17999', 10);
 
 const server = new McpServer({
   name: 'fritzing-workspace',
@@ -76,31 +67,6 @@ async function findSketches(folder: string, limit: number, results: string[] = [
   return results;
 }
 
-async function findDefaultExecutable(): Promise<string | undefined> {
-  const configuredExecutable = process.env.FRITZING_EXECUTABLE ?? process.env.FRITZING_EXE;
-  if (configuredExecutable && await exists(configuredExecutable)) {
-    return configuredExecutable;
-  }
-
-  const candidates = [
-    'build/release/Fritzing.exe',
-    'build/debug/Fritzing.exe',
-    'debug/Fritzing.exe',
-    'release/Fritzing.exe',
-    'Fritzing.exe',
-    'fritzing'
-  ];
-
-  for (const candidate of candidates) {
-    const candidatePath = resolve(repoRoot, candidate);
-    if (await exists(candidatePath)) {
-      return candidatePath;
-    }
-  }
-
-  return undefined;
-}
-
 async function readSketchSummary(sketchPath: string): Promise<string> {
   const extension = extname(sketchPath).toLowerCase();
   const fileStat = await stat(sketchPath);
@@ -123,30 +89,63 @@ async function readSketchSummary(sketchPath: string): Promise<string> {
     lines.push(`Instances: ${instances}`);
     lines.push(`Connector elements: ${connectors}`);
   } else {
-    lines.push('Bundle: .fzz archive. Use Fritzing itself for full inspection/export.');
+    lines.push('Bundle: .fzz archive. Use read_sketch_model to inspect its embedded .fz model.');
   }
 
   return lines.join(EOL);
 }
 
-async function listFilesByExtension(folder: string, extension: string): Promise<string[]> {
-  const results: string[] = [];
-  const entries = await readdir(folder, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const entryPath = join(folder, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...await listFilesByExtension(entryPath, extension));
-    } else if (entry.isFile() && extname(entry.name).toLowerCase() === extension) {
-      results.push(entryPath);
-    }
+function sketchModelEntry(archive: AdmZip): string {
+  const entry = archive.getEntries().find(candidate => candidate.entryName.toLowerCase().endsWith('.fz'));
+  if (!entry) {
+    throw new Error('The .fzz package does not contain an embedded .fz sketch model.');
   }
 
-  return results;
+  return entry.entryName;
+}
+
+async function readSketchModel(sketchPath: string): Promise<string> {
+  const extension = extname(sketchPath).toLowerCase();
+  if (extension === '.fz') {
+    return readFile(sketchPath, 'utf8');
+  }
+  if (extension === '.fzz') {
+    const archive = new AdmZip(sketchPath);
+    return archive.readAsText(sketchModelEntry(archive));
+  }
+
+  throw new Error('Sketch path must end in .fz or .fzz.');
+}
+
+async function writeSketchModel(sketchPath: string, xml: string, createBackup: boolean): Promise<string> {
+  const extension = extname(sketchPath).toLowerCase();
+  if (extension !== '.fz' && extension !== '.fzz') {
+    throw new Error('Sketch path must end in .fz or .fzz.');
+  }
+  if (xml.trim().length === 0) {
+    throw new Error('Sketch XML must not be empty.');
+  }
+  if (!await exists(sketchPath)) {
+    throw new Error(`Sketch file does not exist: ${sketchPath}`);
+  }
+
+  if (createBackup) {
+    await copyFile(sketchPath, `${sketchPath}.bak`);
+  }
+
+  if (extension === '.fz') {
+    await writeFile(sketchPath, xml, 'utf8');
+    return sketchPath;
+  }
+
+  const archive = new AdmZip(sketchPath);
+  archive.updateFile(sketchModelEntry(archive), Buffer.from(xml, 'utf8'));
+  archive.writeZip(sketchPath);
+  return sketchPath;
 }
 
 async function findParts(query: string, limit: number): Promise<Array<{ moduleId: string; title: string; path: string }>> {
-  const partsRoot = process.env.FRITZING_PARTS_PATH ?? resolve(repoRoot, '../fritzing-parts');
+  const partsRoot = getPartsRoot();
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return [];
 
@@ -176,28 +175,8 @@ async function findParts(query: string, limit: number): Promise<Array<{ moduleId
   return matches;
 }
 
-function testingRequest(probe: string, payload?: string, port = defaultTestingPort): Promise<string> {
-  return new Promise((resolveRequest, reject) => {
-    const mode = payload === undefined ? 'read' : `write/${encodeURIComponent(payload)}`;
-    const request = `GET /${encodeURIComponent(probe)}/${mode} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n`;
-    const socket = connect({ host: '127.0.0.1', port });
-    let response = '';
-    socket.setTimeout(5000);
-    socket.on('connect', () => socket.write(request));
-    socket.on('data', chunk => { response += chunk.toString(); });
-    socket.on('timeout', () => socket.destroy(new Error('Timed out waiting for Fritzing --ftesting service.')));
-    socket.on('error', reject);
-    socket.on('close', () => {
-      const separator = response.indexOf('\r\n\r\n');
-      const header = separator >= 0 ? response.slice(0, separator) : response;
-      const body = separator >= 0 ? response.slice(separator + 4) : '';
-      if (!header.startsWith('HTTP/1.0 200')) {
-        reject(new Error(body || `Fritzing testing service returned: ${header.split('\r\n')[0]}`));
-        return;
-      }
-      resolveRequest(body);
-    });
-  });
+function getPartsRoot(): string {
+  return process.env.FRITZING_PARTS_PATH ?? resolve(repoRoot, '../fritzing-parts');
 }
 
 function runProcess(command: string, args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -219,71 +198,16 @@ function runProcess(command: string, args: string[], cwd: string): Promise<{ cod
   });
 }
 
-async function exportSketch(
-  sketchPath: string,
-  format: ExportFormat,
-  outputDir?: string,
-  fritzingExecutable?: string
-): Promise<{ output: string; outputDir: string; code: number | null; isError: boolean }> {
-  const resolvedSketch = resolveWorkspacePath(sketchPath);
-  const resolvedOutput = resolveWorkspacePath(outputDir ?? 'tools/fritzing-mcp/out/export');
-  const executable = fritzingExecutable ? resolveWorkspacePath(fritzingExecutable) : await findDefaultExecutable();
-
-  if (!executable) {
-    return {
-      output: 'Cannot export because no Fritzing executable was found. Build Fritzing first or pass fritzingExecutable.',
-      outputDir: resolvedOutput,
-      code: null,
-      isError: true
-    };
-  }
-
-  await mkdir(resolvedOutput, { recursive: true });
-  const stagedSketch = join(resolvedOutput, basename(resolvedSketch));
-  if (resolve(stagedSketch) !== resolve(resolvedSketch)) {
-    await copyFile(resolvedSketch, stagedSketch);
-  }
-
-  const args = [exportFlags[format], resolvedOutput];
-  const result = await runProcess(executable, args, dirname(executable));
-  const output = [
-    `Command: ${executable} ${args.map(arg => JSON.stringify(arg)).join(' ')}`,
-    `Exit code: ${result.code}`,
-    `Output folder: ${resolvedOutput}`,
-    result.stdout.trim() ? `stdout:${EOL}${result.stdout.trim()}` : '',
-    result.stderr.trim() ? `stderr:${EOL}${result.stderr.trim()}` : ''
-  ].filter(Boolean).join(EOL);
-
-  return {
-    output,
-    outputDir: resolvedOutput,
-    code: result.code,
-    isError: result.code !== 0
-  };
-}
-
-function selectSketchImage(svgFiles: string[], sketchPath: string, view: SketchView): string | undefined {
-  const sketchBaseName = basename(sketchPath, extname(sketchPath)).toLowerCase();
-  const viewName = view.toLowerCase();
-
-  return svgFiles.find(filePath => {
-    const fileName = basename(filePath).toLowerCase();
-    return fileName.startsWith(sketchBaseName) && fileName.includes(viewName);
-  }) ?? svgFiles.find(filePath => basename(filePath).toLowerCase().includes(viewName)) ?? svgFiles[0];
-}
-
 server.registerTool(
   'help',
   {
-    description: 'Describe the Fritzing MCP tools, paths, and local executable status.',
+    description: 'Describe the direct Fritzing MCP tools and repository paths.',
     inputSchema: z.object({})
   },
   async () => {
-    const executable = await findDefaultExecutable();
     const lines = [
       'Fritzing MCP Server',
       `Repository root: ${repoRoot}`,
-      `Fritzing executable: ${executable ?? 'not found'}`,
       '',
       'Repository file tools:',
       '- read_file: path - read a UTF-8 file.',
@@ -291,23 +215,18 @@ server.registerTool(
       '- move_path: sourcePath, destinationPath, overwrite? - move or rename a file or folder.',
       '- delete_path: path, recursive? - delete a file or folder.',
       '',
-      'Sketch and export tools:',
+      'External sketch tools:',
       '- list_sketches: folder?, limit? - list .fz and .fzz sketches.',
       '- inspect_sketch: sketchPath - read basic sketch metadata.',
-      '- locate_fritzing_executable: find the configured or local Fritzing executable.',
-      '- export_sketch: sketchPath, format, outputDir?, fritzingExecutable? - export svg, gerber, or all.',
-      '- render_sketch_image: sketchPath, view?, outputDir?, fritzingExecutable? - render Breadboard, Schematic, or PCB SVG.',
+      '- read_sketch_model: sketchPath - extract editable .fz XML from a .fz or .fzz package.',
+      '- write_sketch_model: sketchPath, xml, createBackup? - update a .fz or embedded .fzz model.',
       '',
-      'Parts and live editor tools:',
+      'Parts tools:',
       '- find_parts: query, limit? - find installed part definitions and moduleIds.',
-      '- place_part: moduleId, port? - place a library part in the active Fritzing editor.',
-      '- get_live_sketch_xml: port? - return the active editor sketch XML.',
-      '- edit_live_part: operation, parameters, port? - use PartProbe operations: getPosition, movePart, movePartRelative, getSize, getResizeHandlePos, sceneToScreen, getGridSize.',
-      '- edit_live_wire: operation, parameters, port? - use WireProbe operations to inspect, move, or delete wires.',
+      '- update_parts_library: pull the configured fritzing-parts Git repository to get the newest official parts.',
       '',
-      'Relative paths are resolved from the repository root. File editing tools are restricted to this repository.',
-      'Live editor workflow: start Fritzing with --ftesting, use find_parts to obtain moduleIds, use place_part, then inspect/edit with the PartProbe and WireProbe tools.',
-      'Live editor tools require Fritzing launched with --ftesting, which listens on port 17999 by default.'
+      'Fritzing does not need to be running. Sketch tools directly edit .fz XML and the embedded .fz model in .fzz packages.',
+      'Relative paths are resolved from the repository root. Repository file tools are restricted to this repository.'
     ];
 
     return {
@@ -432,64 +351,64 @@ server.registerTool(
 );
 
 server.registerTool(
-  'place_part',
+  'read_sketch_model',
   {
-    description: 'Place a real library part into the active Fritzing Breadboard, Schematic, or PCB view. Requires Fritzing started with --ftesting.',
+    description: 'Read editable Fritzing .fz XML from a plain .fz file or the embedded model in a .fzz package without starting Fritzing.',
     inputSchema: z.object({
-      moduleId: z.string().describe('The Fritzing moduleId to place. Use find_parts when needed.'),
-      port: z.number().int().min(1).max(65535).optional().describe('Fritzing --ftesting port; defaults to FRITZING_FTESTING_PORT or 17999.')
+      sketchPath: z.string().describe('Absolute or repository-relative path to a .fz or .fzz sketch.')
     })
   },
-  async ({ moduleId, port }) => {
-    await testingRequest('DropByModuleID', moduleId, port);
+  async ({ sketchPath }) => {
+    const resolvedSketchPath = resolveWorkspacePath(sketchPath);
     return {
-      content: [{ type: 'text', text: `Requested placement of ${moduleId} in the active Fritzing view.` }]
+      content: [{ type: 'text', text: await readSketchModel(resolvedSketchPath) }]
     };
   }
 );
 
 server.registerTool(
-  'get_live_sketch_xml',
+  'write_sketch_model',
   {
-    description: 'Read the current live Fritzing sketch model XML. Requires Fritzing started with --ftesting.',
+    description: 'Update a plain .fz sketch or the embedded .fz model in a .fzz package without starting Fritzing. Creates a .bak copy by default.',
     inputSchema: z.object({
-      port: z.number().int().min(1).max(65535).optional().describe('Fritzing --ftesting port; defaults to FRITZING_FTESTING_PORT or 17999.')
+      sketchPath: z.string().describe('Absolute or repository-relative path to an existing .fz or .fzz sketch.'),
+      xml: z.string().describe('Complete replacement .fz XML model.'),
+      createBackup: z.boolean().default(true).describe('Create a <sketch>.bak copy before editing.')
     })
   },
-  async ({ port }) => ({
-    content: [{ type: 'text', text: await testingRequest('CurrentSketchXml', undefined, port) }]
-  })
-);
-
-server.registerTool(
-  'edit_live_part',
-  {
-    description: 'Inspect or move a part in the active Fritzing view using the live PartProbe. Requires Fritzing started with --ftesting.',
-    inputSchema: z.object({
-      operation: z.enum(['getPosition', 'movePart', 'movePartRelative', 'getSize', 'getResizeHandlePos', 'sceneToScreen', 'getGridSize']).describe('PartProbe operation.'),
-      parameters: z.record(z.string(), z.unknown()).default({}).describe('Operation data, such as {part, x, y}, forwarded to Fritzing.'),
-      port: z.number().int().min(1).max(65535).optional().describe('Fritzing --ftesting port; defaults to FRITZING_FTESTING_PORT or 17999.')
-    })
-  },
-  async ({ operation, parameters, port }) => {
-    const result = await testingRequest('PartProbe', JSON.stringify({ cmd: operation, ...parameters }), port);
-    return { content: [{ type: 'text', text: result }] };
+  async ({ sketchPath, xml, createBackup }) => {
+    const resolvedSketchPath = resolveWorkspacePath(sketchPath);
+    const savedPath = await writeSketchModel(resolvedSketchPath, xml, createBackup);
+    return {
+      content: [{ type: 'text', text: `Updated sketch model: ${savedPath}${createBackup ? `${EOL}Backup: ${savedPath}.bak` : ''}` }]
+    };
   }
 );
 
 server.registerTool(
-  'edit_live_wire',
+  'update_parts_library',
   {
-    description: 'Inspect, move, or delete wires in the active Fritzing view using the live WireProbe. Requires Fritzing started with --ftesting.',
-    inputSchema: z.object({
-      operation: z.enum(['getWires', 'getConnections', 'getWireInfo', 'getWireStartPos', 'getWireEndPos', 'getConnectorScenePos', 'sceneToScreen', 'isBigDotStart', 'isBigDotEnd', 'moveWireEnd', 'moveWireStart', 'moveWireEndRelative', 'moveWireStartRelative', 'moveWireNearEnd', 'moveWireNearStart', 'deleteWire', 'deleteUpToBendpoint']).describe('WireProbe operation.'),
-      parameters: z.record(z.string(), z.unknown()).default({}).describe('Operation data forwarded to Fritzing.'),
-      port: z.number().int().min(1).max(65535).optional().describe('Fritzing --ftesting port; defaults to FRITZING_FTESTING_PORT or 17999.')
-    })
+    description: 'Update the configured fritzing-parts Git repository from its remote using a fast-forward-only pull.',
+    inputSchema: z.object({})
   },
-  async ({ operation, parameters, port }) => {
-    const result = await testingRequest('WireProbe', JSON.stringify({ cmd: operation, ...parameters }), port);
-    return { content: [{ type: 'text', text: result }] };
+  async () => {
+    const partsRoot = getPartsRoot();
+    if (!await exists(partsRoot)) {
+      throw new Error(`Configured Fritzing parts repository does not exist: ${partsRoot}`);
+    }
+
+    const result = await runProcess('git', ['pull', '--ff-only'], partsRoot);
+    const output = [
+      `Parts repository: ${partsRoot}`,
+      `Exit code: ${result.code}`,
+      result.stdout.trim(),
+      result.stderr.trim()
+    ].filter(Boolean).join(EOL);
+
+    return {
+      content: [{ type: 'text', text: output }],
+      isError: result.code !== 0
+    };
   }
 );
 
@@ -527,85 +446,6 @@ server.registerTool(
   async ({ sketchPath }) => ({
     content: [{ type: 'text', text: await readSketchSummary(resolveWorkspacePath(sketchPath)) }]
   })
-);
-
-server.registerTool(
-  'locate_fritzing_executable',
-  {
-    description: 'Find a likely Fritzing executable produced by a local build.',
-    inputSchema: z.object({})
-  },
-  async () => {
-    const executable = await findDefaultExecutable();
-    return {
-      content: [
-        {
-          type: 'text',
-          text: executable ?? 'No Fritzing executable was found in the usual local build folders. Pass fritzingExecutable to export_sketch.'
-        }
-      ]
-    };
-  }
-);
-
-server.registerTool(
-  'export_sketch',
-  {
-    description: 'Export a Fritzing sketch by invoking the local Fritzing command-line export service.',
-    inputSchema: z.object({
-      sketchPath: z.string().describe('Sketch path, relative to the workspace root unless absolute.'),
-      format: z.enum(['svg', 'gerber', 'all']).describe('Export format to request from Fritzing. Use all to include BOM and IPC output.'),
-      outputDir: z.string().optional().describe('Output folder. Defaults to tools/fritzing-mcp/out/export.'),
-      fritzingExecutable: z.string().optional().describe('Path to the Fritzing executable. Defaults to a local build if found.')
-    })
-  },
-  async ({ sketchPath, format, outputDir, fritzingExecutable }: { sketchPath: string; format: ExportFormat; outputDir?: string; fritzingExecutable?: string }) => {
-    const result = await exportSketch(sketchPath, format, outputDir, fritzingExecutable);
-
-    return {
-      content: [{ type: 'text', text: result.output }],
-      isError: result.isError
-    };
-  }
-);
-
-server.registerTool(
-  'render_sketch_image',
-  {
-    description: 'Render a Fritzing sketch view to SVG and return it as MCP image content.',
-    inputSchema: z.object({
-      sketchPath: z.string().describe('Sketch path, relative to the workspace root unless absolute.'),
-      view: z.enum(['Breadboard', 'Schematic', 'PCB']).default('Breadboard').describe('Sketch view image to return.'),
-      outputDir: z.string().optional().describe('Output folder. Defaults to tools/fritzing-mcp/out/render.'),
-      fritzingExecutable: z.string().optional().describe('Path to the Fritzing executable. Defaults to a local build if found.')
-    })
-  },
-  async ({ sketchPath, view, outputDir, fritzingExecutable }: { sketchPath: string; view: SketchView; outputDir?: string; fritzingExecutable?: string }) => {
-    const result = await exportSketch(sketchPath, 'svg', outputDir ?? 'tools/fritzing-mcp/out/render', fritzingExecutable);
-    if (result.isError) {
-      return {
-        content: [{ type: 'text', text: result.output }],
-        isError: true
-      };
-    }
-
-    const svgFiles = await listFilesByExtension(result.outputDir, '.svg');
-    const imagePath = selectSketchImage(svgFiles, sketchPath, view);
-    if (!imagePath) {
-      return {
-        content: [{ type: 'text', text: `Fritzing export completed, but no SVG image was found in ${result.outputDir}.${EOL}${result.output}` }],
-        isError: true
-      };
-    }
-
-    const imageData = await readFile(imagePath, 'base64');
-    return {
-      content: [
-        { type: 'text', text: `Rendered ${view} image: ${imagePath}` },
-        { type: 'image', mimeType: 'image/svg+xml', data: imageData }
-      ]
-    };
-  }
 );
 
 async function main(): Promise<void> {

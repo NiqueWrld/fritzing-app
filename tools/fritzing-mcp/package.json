@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "latest",
+    "adm-zip": "^0.6.0",
     "zod": "latest"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "latest",
     "tsx": "latest",
     "typescript": "latest"
