@@ -2,6 +2,7 @@ import { CameraIcon, FrameCornersIcon, MagnifyingGlassMinusIcon, MagnifyingGlass
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
+import { useTheme } from '../context/ThemeContext'
 import { fetchJson } from '../lib/api'
 
 async function fetchSvg(sketchPath: string): Promise<string> {
@@ -15,6 +16,7 @@ async function fetchSvg(sketchPath: string): Promise<string> {
 
 export default function Breadboard() {
   const { currentSketch } = useSketch()
+  const { theme } = useTheme()
   const [svg, setSvg] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -52,9 +54,9 @@ export default function Breadboard() {
     return (
       <section>
         <h2 className="mb-3 text-lg font-medium">Breadboard view</h2>
-        <p className="text-sm text-slate-500">
+        <p className={`text-sm ${theme.tint.faint}`}>
           No sketch selected. Pick one on the{' '}
-          <Link to="/" className="text-sky-400 underline">
+          <Link to="/" className={theme.primary.link}>
             Sketches page
           </Link>
           .
@@ -71,16 +73,16 @@ export default function Breadboard() {
           <button
             type="button"
             onClick={() => setZoom(current => Math.max(0.25, current - 0.25))}
-            className="rounded-lg border border-slate-700 p-2 transition hover:border-sky-500"
+            className={`rounded-lg border ${theme.secondary.border} p-2 transition ${theme.primary.hoverBorder}`}
             aria-label="Zoom out"
           >
             <MagnifyingGlassMinusIcon size={18} />
           </button>
-          <span className="w-14 text-center text-sm text-slate-400">{Math.round(zoom * 100)}%</span>
+          <span className={`w-14 text-center text-sm ${theme.tint.muted}`}>{Math.round(zoom * 100)}%</span>
           <button
             type="button"
             onClick={() => setZoom(current => Math.min(4, current + 0.25))}
-            className="rounded-lg border border-slate-700 p-2 transition hover:border-sky-500"
+            className={`rounded-lg border ${theme.secondary.border} p-2 transition ${theme.primary.hoverBorder}`}
             aria-label="Zoom in"
           >
             <MagnifyingGlassPlusIcon size={18} />
@@ -88,7 +90,7 @@ export default function Breadboard() {
           <button
             type="button"
             onClick={() => setZoom(1)}
-            className="rounded-lg border border-slate-700 p-2 transition hover:border-sky-500"
+            className={`rounded-lg border ${theme.secondary.border} p-2 transition ${theme.primary.hoverBorder}`}
             aria-label="Reset zoom"
           >
             <FrameCornersIcon size={18} />
@@ -97,7 +99,7 @@ export default function Breadboard() {
             type="button"
             onClick={takeSnapshot}
             disabled={busy}
-            className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium transition hover:bg-sky-500 disabled:opacity-50"
+            className={`flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
           >
             <CameraIcon size={18} />
             Snapshot
@@ -106,20 +108,19 @@ export default function Breadboard() {
       </div>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-600 bg-amber-950 px-4 py-3 text-sm text-amber-200">
+        <div className={`mb-4 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm ${theme.tint.warning}`}>
           <WarningIcon size={18} weight="fill" />
           <span>{error} Try Snapshot to generate a fresh export.</span>
         </div>
       )}
 
-      {busy && <p className="mb-4 text-sm text-slate-400">Working…</p>}
+      {busy && <p className={`mb-4 text-sm ${theme.tint.muted}`}>Working…</p>}
 
       <div
-        className="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-800 bg-white"
+        className={`min-h-0 flex-1 overflow-auto rounded-xl border ${theme.secondary.borderSoft} ${theme.secondary.canvasBg}`}
         style={{
-          // Fritzing breadboard grid: 0.1in pitch, gridColor rgba(0,50,100,20/255)
-          backgroundImage:
-            'linear-gradient(to right, rgba(0,50,100,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,50,100,0.08) 1px, transparent 1px)',
+          // Fritzing breadboard grid: 0.1in pitch, gridColor from theme
+          backgroundImage: `linear-gradient(to right, ${theme.secondary.gridColor} 1px, transparent 1px), linear-gradient(to bottom, ${theme.secondary.gridColor} 1px, transparent 1px)`,
           backgroundSize: `${9.6 * zoom}px ${9.6 * zoom}px`,
           backgroundAttachment: 'local',
         }}
@@ -131,7 +132,7 @@ export default function Breadboard() {
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         ) : (
-          !busy && <p className="p-4 text-sm text-slate-500">No snapshot yet. Use Snapshot to export this sketch.</p>
+          !busy && <p className={`p-4 text-sm ${theme.tint.faint}`}>No snapshot yet. Use Snapshot to export this sketch.</p>
         )}
       </div>
     </section>

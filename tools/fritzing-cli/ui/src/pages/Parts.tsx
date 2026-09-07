@@ -1,8 +1,10 @@
 import { MagnifyingGlassIcon, WarningIcon } from '@phosphor-icons/react'
 import { useState, type FormEvent } from 'react'
+import { useTheme } from '../context/ThemeContext'
 import { fetchJson, type Part } from '../lib/api'
 
 export default function Parts() {
+  const { theme } = useTheme()
   const [query, setQuery] = useState('')
   const [parts, setParts] = useState<Part[]>([])
   const [error, setError] = useState<string>()
@@ -26,7 +28,7 @@ export default function Parts() {
       <h2 className="mb-3 text-lg font-medium">Part search</h2>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-600 bg-amber-950 px-4 py-3 text-sm text-amber-200">
+        <div className={`mb-4 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm ${theme.tint.warning}`}>
           <WarningIcon size={18} weight="fill" />
           {error}
         </div>
@@ -37,12 +39,12 @@ export default function Parts() {
           value={query}
           onChange={event => setQuery(event.target.value)}
           placeholder="Search installed parts, e.g. 555"
-          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-sky-500"
+          className={`w-full rounded-lg border ${theme.secondary.input} px-3 py-2 text-sm outline-none ${theme.primary.focusBorder}`}
         />
         <button
           type="submit"
           disabled={busy}
-          className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium transition hover:bg-sky-500 disabled:opacity-50"
+          className={`flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
         >
           <MagnifyingGlassIcon size={18} />
           Search
@@ -50,10 +52,10 @@ export default function Parts() {
       </form>
       <ul className="mt-4 space-y-2">
         {parts.map(part => (
-          <li key={part.path} className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <li key={part.path} className={`rounded-xl border ${theme.secondary.borderSoft} ${theme.secondary.surface} p-4`}>
             <p className="font-medium">{part.title}</p>
-            <p className="mt-1 font-mono text-xs text-slate-400">{part.moduleId}</p>
-            <p className="mt-1 truncate text-xs text-slate-500">{part.path}</p>
+            <p className={`mt-1 font-mono text-xs ${theme.tint.muted}`}>{part.moduleId}</p>
+            <p className={`mt-1 truncate text-xs ${theme.tint.faint}`}>{part.path}</p>
           </li>
         ))}
       </ul>

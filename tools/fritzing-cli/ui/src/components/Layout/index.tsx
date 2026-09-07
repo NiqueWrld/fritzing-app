@@ -1,13 +1,15 @@
 import { ListIcon } from '@phosphor-icons/react'
 import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
+import { useTheme } from '../../context/ThemeContext'
 import Sidebar from '../Sidebar'
 
 function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const { theme } = useTheme()
 
   return (
-    <div className="h-screen flex bg-gray-100 dark:bg-gray-900 overflow-hidden">
+    <div className={`h-screen flex ${theme.secondary.appBg} ${theme.tint.base} overflow-hidden`}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -16,7 +18,7 @@ function Layout() {
         />
       )}
       {/* Mobile sidebar */}
-      <div className={`fixed z-30 top-0 left-0 h-full transition-transform md:hidden bg-gray-100 dark:bg-gray-900 ${
+      <div className={`fixed z-30 top-0 left-0 h-full transition-transform md:hidden ${theme.secondary.appBg} ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
         <Sidebar />
@@ -30,12 +32,12 @@ function Layout() {
         <button
           type="button"
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="m-2 self-start rounded-lg border border-gray-200 dark:border-gray-700 p-2 md:hidden"
+          className={`m-2 self-start rounded-lg border ${theme.secondary.cardBorder} p-2 md:hidden`}
           aria-label="Toggle menu"
         >
           <ListIcon size={20} />
         </button>
-        <main className="flex-1 flex flex-col bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+        <main className={`flex-1 flex flex-col ${theme.secondary.cardBg} rounded-xl border ${theme.secondary.cardBorder}`}>
           <div className="flex-1 p-4 md:p-6">
             <Outlet />
           </div>
