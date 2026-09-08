@@ -12,7 +12,8 @@ import {
   readSketchSummary,
   resolveWorkspacePath,
   runProcess,
-  snapshotProject
+  snapshotProject,
+  writeSketchModel
 } from './cli.js';
 
 // Parts live in the external fritzing-parts repo and the app's bundled resources/parts.
@@ -44,6 +45,109 @@ async function findFzpByModuleId(moduleId: string): Promise<string | undefined> 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+type PinPosition = { x: number; y: number };
+
+// Fritzing scene units are 90dpi.
+const SVG_DPI = 90;
+
+async function readPartImageSvg(fzpPath: string): Promise<string | undefined> {
+  const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
+  if (!fzp) return undefined;
+  const image = fzp.match(/<breadboardView\b[^>]*>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
+  if (!image) return undefined;
+  const family = basename(dirname(fzpPath));
+  for (const root of getPartsRoots()) {
+    for (const candidate of [join(root, 'svg', family, image), join(root, 'svg', 'core', image)]) {
+      const svg = await readFile(candidate, 'utf8').catch(() => undefined);
+      if (svg) return svg;
+    }
+  }
+  return undefined;
+}
+
+// Locate a connector pin's center within the part's breadboard SVG, in scene units.
+async function findPinPosition(fzpPath: string, connectorId: string): Promise<PinPosition | undefined> {
+  const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
+  if (!fzp) return undefined;
+  const connectorBlock = fzp.match(new RegExp(`<connector[^>]*id="${connectorId}"[\\s\\S]*?</connector>`, 'i'))?.[0];
+  const svgId = connectorBlock?.match(/<breadboardView>[\s\S]*?<p\b[^>]*\bsvgId="([^"]+)"/i)?.[1]
+    ?? connectorBlock?.match(/<p\b[^>]*layer="breadboard"[^>]*\bsvgId="([^"]+)"/i)?.[1];
+  if (!svgId) return undefined;
+  const svg = await readPartImageSvg(fzpPath);
+  if (!svg) return undefined;
+  const element = svg.match(new RegExp(`<[a-z]+\\b[^>]*\\bid="${svgId}"[^>]*>`, 'i'))?.[0];
+  if (!element) return undefined;
+  const attr = (name: string) => {
+    const value = element.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1];
+    return value === undefined ? undefined : Number(value);
+  };
+  let x: number | undefined;
+  let y: number | undefined;
+  const cx = attr('cx');
+  const cy = attr('cy');
+  if (cx !== undefined && cy !== undefined) {
+    x = cx;
+    y = cy;
+  } else {
+    const rx = attr('x');
+    const ry = attr('y');
+    const width = attr('width') ?? 0;
+    const height = attr('height') ?? 0;
+    if (rx !== undefined && ry !== undefined) {
+      x = rx + width / 2;
+      y = ry + height / 2;
+    }
+  }
+  if (x === undefined || y === undefined) return undefined;
+  // Map user units to scene units via the SVG's viewBox/width ratio.
+  const viewBox = svg.match(/viewBox="([^"]+)"/i)?.[1]?.split(/\s+/).map(Number);
+  const widthAttr = svg.match(/<svg[^>]*\bwidth="([\d.]+)(in|px)?"/i);
+  if (viewBox && widthAttr) {
+    const widthValue = Number(widthAttr[1]);
+    const widthScene = widthAttr[2] === 'in' ? widthValue * SVG_DPI : widthValue * (SVG_DPI / 96);
+    const scale = widthScene / viewBox[2];
+    return { x: x * scale, y: y * scale };
+  }
+  return { x, y };
+}
+
+function buildWireInstance(options: {
+  title: string;
+  color: string;
+  from: { modelIndex: string; x: number; y: number };
+  to: { modelIndex: string; connectorId: string };
+  fromConnect: { connectorId: string };
+  toPoint: { x: number; y: number };
+}): string {
+  const { title, color, from, to, fromConnect, toPoint } = options;
+  const dx = toPoint.x - from.x;
+  const dy = toPoint.y - from.y;
+  return `
+        <instance moduleIdRef="WireModuleID" modelIndex="${Math.floor(Math.random() * 900000) + 100000}" path=":/resources/parts/core/wire.fzp">
+            <title>${title}</title>
+            <views>
+                <breadboardView layer="breadboardWire">
+                    <geometry z="3.5" x="${from.x}" y="${from.y}" x1="0" y1="0" x2="${dx}" y2="${dy}" wireFlags="64"/>
+                    <wireExtras mils="22.2222" color="${color}" opacity="1" banded="0"/>
+                    <connectors>
+                        <connector connectorId="connector0" layer="breadboardWire">
+                            <geometry x="0" y="0"/>
+                            <connects>
+                                <connect connectorId="${fromConnect.connectorId}" modelIndex="${from.modelIndex}" layer="breadboardbreadboard"/>
+                            </connects>
+                        </connector>
+                        <connector connectorId="connector1" layer="breadboardWire">
+                            <geometry x="0" y="0"/>
+                            <connects>
+                                <connect connectorId="${to.connectorId}" modelIndex="${to.modelIndex}" layer="breadboardbreadboard"/>
+                            </connects>
+                        </connector>
+                    </connectors>
+                </breadboardView>
+            </views>
+        </instance>`;
 }
 
 function requireParam(url: URL, name: string): string {
@@ -182,6 +286,86 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     case 'GET /api/instances': {
       sendJson(res, 200, { instances: await listRunningFritzingInstances() });
+      return;
+    }
+    case 'POST /api/sketch/autowire': {
+      const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      const xml = await readSketchModel(sketchPath);
+
+      type InstanceInfo = { moduleIdRef: string; modelIndex: string; x: number; y: number };
+      const findInstance = (pattern: RegExp): InstanceInfo | undefined => {
+        for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
+          const attrs = match[1] ?? '';
+          const body = match[2] ?? '';
+          const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
+          if (!pattern.test(moduleIdRef)) continue;
+          const modelIndex = attrs.match(/\bmodelIndex="([^"]+)"/i)?.[1] ?? '';
+          const geometry = body.match(/<breadboardView[^>]*>[\s\S]*?<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
+          const x = Number(geometry.match(/\bx="([^"]+)"/i)?.[1] ?? '0');
+          const y = Number(geometry.match(/\by="([^"]+)"/i)?.[1] ?? '0');
+          return { moduleIdRef, modelIndex, x, y };
+        }
+        return undefined;
+      };
+
+      const uno = findInstance(/arduino_uno/i);
+      const breadboard = findInstance(/breadboard/i);
+      if (!uno) throw new HttpError(404, 'No Arduino Uno found in this sketch.');
+      if (!breadboard) throw new HttpError(404, 'No breadboard found in this sketch.');
+
+      const unoFzp = await findFzpByModuleId(uno.moduleIdRef);
+      const breadboardFzp = await findFzpByModuleId(breadboard.moduleIdRef);
+      if (!unoFzp || !breadboardFzp) throw new HttpError(404, 'Part definitions for the Uno or breadboard were not found.');
+
+      // Power header pins are the last 5V/GND connectors declared in the Uno fzp.
+      const unoDefinition = await readFile(unoFzp, 'utf8');
+      const named = (name: string) => [...unoDefinition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
+        .filter(match => match[2] === name)
+        .map(match => match[1]);
+      const fiveVoltId = named('5V').at(-1);
+      const groundId = named('GND').at(-1);
+      if (!fiveVoltId || !groundId) throw new HttpError(404, 'The Uno part has no 5V/GND connectors.');
+
+      const railPlus = 'pin5W';
+      const railMinus = 'pin5X';
+      const [fiveVoltPin, groundPin, railPlusPin, railMinusPin] = await Promise.all([
+        findPinPosition(unoFzp, fiveVoltId),
+        findPinPosition(unoFzp, groundId),
+        findPinPosition(breadboardFzp, railPlus),
+        findPinPosition(breadboardFzp, railMinus)
+      ]);
+      if (!fiveVoltPin || !groundPin || !railPlusPin || !railMinusPin) {
+        throw new HttpError(500, 'Could not resolve pin positions from the part SVGs.');
+      }
+
+      const wires = [
+        buildWireInstance({
+          title: 'AutoWire5V',
+          color: '#cc1414',
+          from: { modelIndex: uno.modelIndex, x: uno.x + fiveVoltPin.x, y: uno.y + fiveVoltPin.y },
+          fromConnect: { connectorId: fiveVoltId },
+          to: { modelIndex: breadboard.modelIndex, connectorId: railPlus },
+          toPoint: { x: breadboard.x + railPlusPin.x, y: breadboard.y + railPlusPin.y }
+        }),
+        buildWireInstance({
+          title: 'AutoWireGND',
+          color: '#404040',
+          from: { modelIndex: uno.modelIndex, x: uno.x + groundPin.x, y: uno.y + groundPin.y },
+          fromConnect: { connectorId: groundId },
+          to: { modelIndex: breadboard.modelIndex, connectorId: railMinus },
+          toPoint: { x: breadboard.x + railMinusPin.x, y: breadboard.y + railMinusPin.y }
+        })
+      ].join('');
+
+      const updated = xml.replace(/<\/instances>/i, `${wires}\n    </instances>`);
+      if (updated === xml) throw new HttpError(500, 'Could not insert wires into the sketch.');
+      await writeSketchModel(sketchPath, updated, true);
+      sendJson(res, 200, {
+        wired: [
+          { from: `Uno ${fiveVoltId} (5V)`, to: `Breadboard ${railPlus} (+ rail)` },
+          { from: `Uno ${groundId} (GND)`, to: `Breadboard ${railMinus} (- rail)` }
+        ]
+      });
       return;
     }
     case 'GET /api/browse': {

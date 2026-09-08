@@ -131,7 +131,7 @@ export async function readSketchModel(sketchPath: string): Promise<string> {
   throw new Error('Sketch path must end in .fz, .fzz, or a backup such as .fz.bak or .fzz.bak.');
 }
 
-async function writeSketchModel(sketchPath: string, xml: string, createBackup: boolean): Promise<string> {
+export async function writeSketchModel(sketchPath: string, xml: string, createBackup: boolean): Promise<string> {
   const extension = normalizeSketchExtension(sketchPath);
   if (extension !== '.fz' && extension !== '.fzz') {
     throw new Error('Sketch path must end in .fz, .fzz, or a backup such as .fz.bak or .fzz.bak.');

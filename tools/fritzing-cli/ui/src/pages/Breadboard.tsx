@@ -1,4 +1,4 @@
-import { CameraIcon, CornersInIcon, FrameCornersIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
+import { CameraIcon, CornersInIcon, FrameCornersIcon, LightningIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
@@ -142,6 +142,23 @@ export default function Breadboard() {
       })
   }
 
+  const autoWire = () => {
+    if (!currentSketch) return
+    setBusy(true)
+    fetchJson<{ wired: Array<{ from: string; to: string }> }>(
+      `/api/sketch/autowire?path=${encodeURIComponent(currentSketch)}`,
+      { method: 'POST' }
+    )
+      .then(() => {
+        setError(undefined)
+        loadDiagram()
+      })
+      .catch((requestError: Error) => {
+        setError(requestError.message)
+        setBusy(false)
+      })
+  }
+
   if (!currentSketch) {
     return (
       <section>
@@ -208,6 +225,18 @@ export default function Breadboard() {
           >
             <CornersInIcon size={18} />
           </button>
+          {mode === 'live' && (
+            <button
+              type="button"
+              onClick={autoWire}
+              disabled={busy}
+              className={`flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
+              title="Wire the Uno's 5V and GND to the breadboard power rails"
+            >
+              <LightningIcon size={18} />
+              Auto wire
+            </button>
+          )}
           {mode === 'snapshot' && (
             <button
               type="button"
