@@ -14,11 +14,11 @@ async function fetchSvg(sketchPath: string): Promise<string> {
   return response.text()
 }
 
-type DiagramPart = { moduleIdRef: string; title: string; x: number; y: number; z: number }
+type DiagramPart = { moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number }
 type DiagramWire = { x1: number; y1: number; x2: number; y2: number; color: string; width: number }
 type Diagram = { parts: DiagramPart[]; wires: DiagramWire[] }
 
-// Fritzing scene units are 90dpi; browsers render SVG physical units at 96dpi.
+// Fallback for parts without server-computed sizes: scene 90dpi vs browser 96dpi px.
 const sceneScale = 90 / 96
 
 export default function Breadboard() {
@@ -281,7 +281,9 @@ export default function Breadboard() {
                   alt={part.title}
                   title={part.title}
                   className="absolute origin-top-left"
-                  style={{ left: part.x - offsetX, top: part.y - offsetY, transform: `scale(${sceneScale})` }}
+                  style={part.width && part.height
+                    ? { left: part.x - offsetX, top: part.y - offsetY, width: part.width, height: part.height }
+                    : { left: part.x - offsetX, top: part.y - offsetY, transform: `scale(${sceneScale})` }}
                   onError={event => (event.currentTarget.style.display = 'none')}
                 />
               ))}

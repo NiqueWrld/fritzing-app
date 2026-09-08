@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import {
   findParts,
@@ -16,9 +17,19 @@ import {
   writeSketchModel
 } from './cli.js';
 
-// Parts live in the external fritzing-parts repo and the app's bundled resources/parts.
+// Parts live in the external fritzing-parts repo, the app's bundled resources/parts,
+// and the user's Fritzing data folder (custom/imported parts).
 function getPartsRoots(): string[] {
-  return [getPartsRoot(), resolveWorkspacePath('resources/parts')];
+  const roots = [getPartsRoot(), resolveWorkspacePath('resources/parts')];
+  const documents = [
+    process.env.FRITZING_USER_PARTS,
+    process.env.OneDrive ? join(process.env.OneDrive, 'Documents', 'Fritzing', 'parts') : undefined,
+    join(homedir(), 'Documents', 'Fritzing', 'parts')
+  ];
+  for (const candidate of documents) {
+    if (candidate && !roots.includes(candidate)) roots.push(candidate);
+  }
+  return roots;
 }
 
 const moduleIdCache = new Map<string, string>();
@@ -52,6 +63,26 @@ type PinPosition = { x: number; y: number };
 // Fritzing scene units are 90dpi.
 const SVG_DPI = 90;
 
+// Mirrors TextUtils::convertToInches: px is 90dpi, or 72dpi for Illustrator-generated SVGs.
+function svgSizeToScene(svg: string): { width: number; height: number } | undefined {
+  const isIllustrator = /Adobe Illustrator/i.test(svg.slice(0, 500));
+  const parse = (name: string): number | undefined => {
+    const raw = svg.match(new RegExp(`<svg[^>]*\\b${name}="([\\d.]+)([a-z%]*)"`, 'i'));
+    if (!raw) return undefined;
+    const value = Number(raw[1]);
+    const unit = raw[2].toLowerCase();
+    const divisor = unit === 'cm' ? 2.54
+      : unit === 'mm' ? 25.4
+      : unit === 'in' ? 1
+      : unit === 'pt' ? 72
+      : isIllustrator ? 72 : 90;
+    return (value / divisor) * SVG_DPI;
+  };
+  const width = parse('width');
+  const height = parse('height');
+  return width !== undefined && height !== undefined ? { width, height } : undefined;
+}
+
 async function readPartImageSvg(fzpPath: string): Promise<string | undefined> {
   const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
   if (!fzp) return undefined;
@@ -77,37 +108,31 @@ async function findPinPosition(fzpPath: string, connectorId: string): Promise<Pi
   if (!svgId) return undefined;
   const svg = await readPartImageSvg(fzpPath);
   if (!svg) return undefined;
-  const element = svg.match(new RegExp(`<[a-z]+\\b[^>]*\\bid="${svgId}"[^>]*>`, 'i'))?.[0];
-  if (!element) return undefined;
-  const attr = (name: string) => {
-    const value = element.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1];
-    return value === undefined ? undefined : Number(value);
-  };
+  // The svgId may be on a shape or a <g> wrapping shapes; attributes may precede the id,
+  // so scan from the element's opening bracket.
+  const idIndex = svg.search(new RegExp(`\\bid="${svgId}"`, 'i'));
+  if (idIndex < 0) return undefined;
+  const elementStart = svg.lastIndexOf('<', idIndex);
+  const windowText = svg.slice(elementStart, idIndex + 800);
   let x: number | undefined;
   let y: number | undefined;
-  const cx = attr('cx');
-  const cy = attr('cy');
-  if (cx !== undefined && cy !== undefined) {
-    x = cx;
-    y = cy;
+  const circle = windowText.match(/\bcx="([\d.-]+)"[^>]*\bcy="([\d.-]+)"/i);
+  if (circle) {
+    x = Number(circle[1]);
+    y = Number(circle[2]);
   } else {
-    const rx = attr('x');
-    const ry = attr('y');
-    const width = attr('width') ?? 0;
-    const height = attr('height') ?? 0;
-    if (rx !== undefined && ry !== undefined) {
-      x = rx + width / 2;
-      y = ry + height / 2;
+    const rect = windowText.match(/\bx="([\d.-]+)"[^>]*\by="([\d.-]+)"(?:[^>]*\bwidth="([\d.-]+)")?(?:[^>]*\bheight="([\d.-]+)")?/i);
+    if (rect) {
+      x = Number(rect[1]) + Number(rect[3] ?? 0) / 2;
+      y = Number(rect[2]) + Number(rect[4] ?? 0) / 2;
     }
   }
-  if (x === undefined || y === undefined) return undefined;
-  // Map user units to scene units via the SVG's viewBox/width ratio.
+  if (x === undefined || y === undefined || Number.isNaN(x) || Number.isNaN(y)) return undefined;
+  // Map user units to scene units via the viewBox against the Fritzing-converted size.
   const viewBox = svg.match(/viewBox="([^"]+)"/i)?.[1]?.split(/\s+/).map(Number);
-  const widthAttr = svg.match(/<svg[^>]*\bwidth="([\d.]+)(in|px)?"/i);
-  if (viewBox && widthAttr) {
-    const widthValue = Number(widthAttr[1]);
-    const widthScene = widthAttr[2] === 'in' ? widthValue * SVG_DPI : widthValue * (SVG_DPI / 96);
-    const scale = widthScene / viewBox[2];
+  const sceneSize = svgSizeToScene(svg);
+  if (viewBox && sceneSize && viewBox[2] > 0) {
+    const scale = sceneSize.width / viewBox[2];
     return { x: x * scale, y: y * scale };
   }
   return { x, y };
@@ -197,7 +222,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // breadboardView <geometry x y z>; wires run from (x+x1,y+y1) to (x+x2,y+y2).
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       const xml = await readSketchModel(sketchPath);
-      const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number }> = [];
+      const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number }> = [];
       const wires: Array<{ x1: number; y1: number; x2: number; y2: number; color: string; width: number }> = [];
       for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
         const attrs = match[1] ?? '';
@@ -220,6 +245,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
       }
       parts.sort((a, b) => a.z - b.z);
+      // Attach Fritzing-accurate scene sizes so the client renders parts at true scale.
+      await Promise.all(parts.map(async part => {
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        if (!fzpPath) return;
+        const svg = await readPartImageSvg(fzpPath);
+        if (!svg) return;
+        const size = svgSizeToScene(svg);
+        if (size) {
+          part.width = size.width;
+          part.height = size.height;
+        }
+      }));
       sendJson(res, 200, { parts, wires });
       return;
     }
@@ -290,82 +327,97 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     case 'POST /api/sketch/autowire': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
-      const xml = await readSketchModel(sketchPath);
+      // Start from a clean slate: remove every existing wire, then wire everything fresh.
+      const xml = (await readSketchModel(sketchPath))
+        .replace(/\s*<instance\b[^>]*moduleIdRef="WireModuleID"[^>]*>[\s\S]*?<\/instance>/gi, '');
 
-      type InstanceInfo = { moduleIdRef: string; modelIndex: string; x: number; y: number };
-      const findInstance = (pattern: RegExp): InstanceInfo | undefined => {
-        for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
-          const attrs = match[1] ?? '';
-          const body = match[2] ?? '';
-          const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
-          if (!pattern.test(moduleIdRef)) continue;
-          const modelIndex = attrs.match(/\bmodelIndex="([^"]+)"/i)?.[1] ?? '';
-          const geometry = body.match(/<breadboardView[^>]*>[\s\S]*?<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
-          const x = Number(geometry.match(/\bx="([^"]+)"/i)?.[1] ?? '0');
-          const y = Number(geometry.match(/\by="([^"]+)"/i)?.[1] ?? '0');
-          return { moduleIdRef, modelIndex, x, y };
-        }
-        return undefined;
-      };
-
-      const uno = findInstance(/arduino_uno/i);
-      const breadboard = findInstance(/breadboard/i);
-      if (!uno) throw new HttpError(404, 'No Arduino Uno found in this sketch.');
-      if (!breadboard) throw new HttpError(404, 'No breadboard found in this sketch.');
-
-      const unoFzp = await findFzpByModuleId(uno.moduleIdRef);
-      const breadboardFzp = await findFzpByModuleId(breadboard.moduleIdRef);
-      if (!unoFzp || !breadboardFzp) throw new HttpError(404, 'Part definitions for the Uno or breadboard were not found.');
-
-      // Power header pins are the last 5V/GND connectors declared in the Uno fzp.
-      const unoDefinition = await readFile(unoFzp, 'utf8');
-      const named = (name: string) => [...unoDefinition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
-        .filter(match => match[2] === name)
-        .map(match => match[1]);
-      const fiveVoltId = named('5V').at(-1);
-      const groundId = named('GND').at(-1);
-      if (!fiveVoltId || !groundId) throw new HttpError(404, 'The Uno part has no 5V/GND connectors.');
-
-      const railPlus = 'pin5W';
-      const railMinus = 'pin5X';
-      const [fiveVoltPin, groundPin, railPlusPin, railMinusPin] = await Promise.all([
-        findPinPosition(unoFzp, fiveVoltId),
-        findPinPosition(unoFzp, groundId),
-        findPinPosition(breadboardFzp, railPlus),
-        findPinPosition(breadboardFzp, railMinus)
-      ]);
-      if (!fiveVoltPin || !groundPin || !railPlusPin || !railMinusPin) {
-        throw new HttpError(500, 'Could not resolve pin positions from the part SVGs.');
+      type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number };
+      const instances: InstanceInfo[] = [];
+      for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
+        const attrs = match[1] ?? '';
+        const body = match[2] ?? '';
+        const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
+        const modelIndex = attrs.match(/\bmodelIndex="([^"]+)"/i)?.[1] ?? '';
+        const title = (body.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim();
+        const geometry = body.match(/<breadboardView[^>]*>[\s\S]*?<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
+        const x = Number(geometry.match(/\bx="([^"]+)"/i)?.[1] ?? '0');
+        const y = Number(geometry.match(/\by="([^"]+)"/i)?.[1] ?? '0');
+        instances.push({ moduleIdRef, modelIndex, title, x, y });
       }
 
-      const wires = [
-        buildWireInstance({
-          title: 'AutoWire5V',
-          color: '#cc1414',
-          from: { modelIndex: uno.modelIndex, x: uno.x + fiveVoltPin.x, y: uno.y + fiveVoltPin.y },
-          fromConnect: { connectorId: fiveVoltId },
-          to: { modelIndex: breadboard.modelIndex, connectorId: railPlus },
-          toPoint: { x: breadboard.x + railPlusPin.x, y: breadboard.y + railPlusPin.y }
-        }),
-        buildWireInstance({
-          title: 'AutoWireGND',
-          color: '#404040',
-          from: { modelIndex: uno.modelIndex, x: uno.x + groundPin.x, y: uno.y + groundPin.y },
-          fromConnect: { connectorId: groundId },
-          to: { modelIndex: breadboard.modelIndex, connectorId: railMinus },
-          toPoint: { x: breadboard.x + railMinusPin.x, y: breadboard.y + railMinusPin.y }
-        })
-      ].join('');
+      const skipModules = /^(WireModuleID|NoteModuleID|RulerModuleID|LogoImageModuleID|TwoLayerRectanglePCBModuleID)$/i;
+      const breadboard = instances.find(instance => /breadboard/i.test(instance.moduleIdRef));
+      if (!breadboard) throw new HttpError(404, 'No breadboard found in this sketch.');
+      const breadboardFzp = await findFzpByModuleId(breadboard.moduleIdRef);
+      if (!breadboardFzp) throw new HttpError(404, 'The breadboard part definition was not found.');
 
-      const updated = xml.replace(/<\/instances>/i, `${wires}\n    </instances>`);
+      const groundName = /^(gnd|ground|-|0v|vss)$/i;
+      const wired: Array<{ from: string; to: string }> = [];
+      const wireBlocks: string[] = [];
+      // Each part gets its own rail column so wires do not stack.
+      let railColumn = 5;
+
+      for (const part of instances) {
+        if (part === breadboard) continue;
+        if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        if (!fzpPath) continue;
+        const definition = await readFile(fzpPath, 'utf8').catch(() => '');
+        const connectors = [...definition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
+          .map(match => ({ id: match[1], name: match[2] }));
+        // Prefer 5V over generic supply names over VIN; last match wins within a tier (power headers are declared last).
+        const powerTiers = [/^(5v|\+5v)$/i, /^(vcc|vdd|vs|v\+|\+|pwr|power|3v3|3\.3v)$/i, /^vin$/i];
+        const powerId = powerTiers
+          .map(tier => connectors.filter(connector => tier.test(connector.name)).at(-1)?.id)
+          .find(id => id !== undefined);
+        const groundId = connectors.filter(connector => groundName.test(connector.name)).at(-1)?.id;
+        if (!powerId && !groundId) continue;
+
+        const railPlus = `pin${railColumn}W`;
+        const railMinus = `pin${railColumn}X`;
+        const [powerPin, groundPin, railPlusPin, railMinusPin] = await Promise.all([
+          powerId ? findPinPosition(fzpPath, powerId) : undefined,
+          groundId ? findPinPosition(fzpPath, groundId) : undefined,
+          findPinPosition(breadboardFzp, railPlus),
+          findPinPosition(breadboardFzp, railMinus)
+        ]);
+        const label = part.title || part.moduleIdRef;
+
+        if (powerId && powerPin && railPlusPin) {
+          wireBlocks.push(buildWireInstance({
+            title: `AutoWire5V_${part.modelIndex}`,
+            color: '#cc1414',
+            from: { modelIndex: part.modelIndex, x: part.x + powerPin.x, y: part.y + powerPin.y },
+            fromConnect: { connectorId: powerId },
+            to: { modelIndex: breadboard.modelIndex, connectorId: railPlus },
+            toPoint: { x: breadboard.x + railPlusPin.x, y: breadboard.y + railPlusPin.y }
+          }));
+          wired.push({ from: `${label} ${powerId} (power)`, to: `Breadboard ${railPlus} (+ rail)` });
+        }
+        if (groundId && groundPin && railMinusPin) {
+          wireBlocks.push(buildWireInstance({
+            title: `AutoWireGND_${part.modelIndex}`,
+            color: '#404040',
+            from: { modelIndex: part.modelIndex, x: part.x + groundPin.x, y: part.y + groundPin.y },
+            fromConnect: { connectorId: groundId },
+            to: { modelIndex: breadboard.modelIndex, connectorId: railMinus },
+            toPoint: { x: breadboard.x + railMinusPin.x, y: breadboard.y + railMinusPin.y }
+          }));
+          wired.push({ from: `${label} ${groundId} (ground)`, to: `Breadboard ${railMinus} (- rail)` });
+        }
+        if ((powerId && powerPin) || (groundId && groundPin)) {
+          railColumn += 5;
+        }
+      }
+
+      if (wireBlocks.length === 0) {
+        throw new HttpError(404, 'No unwired parts with power/ground connectors were found.');
+      }
+
+      const updated = xml.replace(/<\/instances>/i, `${wireBlocks.join('')}\n    </instances>`);
       if (updated === xml) throw new HttpError(500, 'Could not insert wires into the sketch.');
       await writeSketchModel(sketchPath, updated, true);
-      sendJson(res, 200, {
-        wired: [
-          { from: `Uno ${fiveVoltId} (5V)`, to: `Breadboard ${railPlus} (+ rail)` },
-          { from: `Uno ${groundId} (GND)`, to: `Breadboard ${railMinus} (- rail)` }
-        ]
-      });
+      sendJson(res, 200, { wired });
       return;
     }
     case 'GET /api/browse': {
