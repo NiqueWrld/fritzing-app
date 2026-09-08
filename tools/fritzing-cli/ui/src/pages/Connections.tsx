@@ -1,4 +1,4 @@
-import { PlugsConnectedIcon, WarningIcon } from '@phosphor-icons/react'
+import { CheckIcon, CopyIcon, PlugsConnectedIcon, UploadSimpleIcon, WarningIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
@@ -7,7 +7,7 @@ import { fetchJson } from '../lib/api'
 
 type ConnectionsReport = {
   parts: Array<{ title: string; moduleIdRef: string }>
-  connections: Array<{ from: string; to: string; color: string; segments: number }>
+  connections: Array<{ from: string; to: string; fromRef: string; toRef: string; color: string; segments: number }>
   floating: string[]
   wireSegments: number
 }
@@ -17,6 +17,10 @@ export default function Connections() {
   const { theme } = useTheme()
   const [report, setReport] = useState<ConnectionsReport>()
   const [error, setError] = useState<string>()
+  const [copied, setCopied] = useState(false)
+  const [jsonText, setJsonText] = useState('')
+  const [applying, setApplying] = useState(false)
+  const [applied, setApplied] = useState<number>()
 
   const load = useCallback(() => {
     if (!currentSketch) return
@@ -29,6 +33,39 @@ export default function Connections() {
   }, [currentSketch])
 
   useEffect(load, [load])
+
+  const editableJson = () =>
+    JSON.stringify(
+      { connections: (report?.connections ?? []).map(c => ({ from: c.fromRef, to: c.toRef, color: c.color })) },
+      null,
+      2
+    )
+
+  const copyJson = () => {
+    navigator.clipboard.writeText(editableJson()).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  const applyJson = () => {
+    if (!currentSketch || !jsonText.trim()) return
+    setApplying(true)
+    setApplied(undefined)
+    fetchJson<{ applied: number }>(`/api/sketch/connections?path=${encodeURIComponent(currentSketch)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: jsonText
+    })
+      .then(result => {
+        setApplied(result.applied)
+        setError(undefined)
+        setJsonText('')
+        load()
+      })
+      .catch((requestError: Error) => setError(requestError.message))
+      .finally(() => setApplying(false))
+  }
 
   if (!currentSketch) {
     return (
@@ -53,16 +90,32 @@ export default function Connections() {
           Connections
         </h2>
         {report && (
-          <span className={`text-sm ${theme.tint.muted}`}>
-            {report.connections.length} connections · {report.wireSegments} wire segments
-          </span>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={copyJson}
+              className={`flex items-center gap-2 rounded-lg border ${theme.secondary.border} px-3 py-2 text-sm transition ${theme.primary.hoverBorder}`}
+            >
+              {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
+              {copied ? 'Copied' : 'Copy JSON'}
+            </button>
+            <span className={`text-sm ${theme.tint.muted}`}>
+              {report.connections.length} connections · {report.wireSegments} wire segments
+            </span>
+          </div>
         )}
       </div>
 
       {error && (
-        <div className={`mb-4 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm ${theme.tint.warning}`}>
-          <WarningIcon size={18} weight="fill" />
-          {error}
+        <div className={`mb-4 flex items-start gap-2 rounded-lg border px-4 py-3 text-sm ${theme.tint.warning}`}>
+          <WarningIcon size={18} weight="fill" className="mt-0.5 shrink-0" />
+          <pre className="whitespace-pre-wrap font-sans">{error}</pre>
+        </div>
+      )}
+
+      {applied !== undefined && (
+        <div className={`mb-4 rounded-lg border ${theme.secondary.border} px-4 py-3 text-sm`}>
+          Applied {applied} connections — the sketch was rewired (backup saved).
         </div>
       )}
 
@@ -90,6 +143,24 @@ export default function Connections() {
               Floating wires: {report.floating.join(', ')}
             </div>
           )}
+
+          <h3 className="mb-2 mt-6 text-sm font-medium">Edit as JSON</h3>
+          <textarea
+            value={jsonText}
+            onChange={event => setJsonText(event.target.value)}
+            placeholder='Paste a connections JSON here, e.g. { "connections": [{ "from": "PIR1:connector2", "to": "ArduinoUno:connector63", "color": "#33cc00" }] }'
+            rows={6}
+            className={`w-full rounded-lg border ${theme.secondary.input} px-3 py-2 font-mono text-xs outline-none ${theme.primary.focusBorder}`}
+          />
+          <button
+            type="button"
+            onClick={applyJson}
+            disabled={applying || !jsonText.trim()}
+            className={`mt-2 flex items-center gap-2 rounded-lg ${theme.primary.button} px-4 py-2 text-sm font-medium transition disabled:opacity-50`}
+          >
+            <UploadSimpleIcon size={18} />
+            {applying ? 'Applying…' : 'Validate and apply'}
+          </button>
 
           <h3 className="mb-2 mt-6 text-sm font-medium">Parts ({report.parts.length})</h3>
           <ul className="space-y-1">

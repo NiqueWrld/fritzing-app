@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -44,7 +44,69 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
 type PinPosition = { x: number; y: number };
+
+// Autowire settings are owned by the server and persisted next to the CLI.
+type AutowireSettings = {
+  placeParts: boolean;
+  resetRotations: boolean;
+  railJumpers: boolean;
+  wireSignals: boolean;
+  cleanOnly: boolean;
+  boardGap: number;
+  partSpacing: number;
+};
+const defaultAutowireSettings: AutowireSettings = {
+  placeParts: true,
+  resetRotations: true,
+  railJumpers: true,
+  wireSignals: true,
+  cleanOnly: false,
+  boardGap: 60,
+  partSpacing: 45
+};
+function autowireSettingsPath(): string {
+  return resolveWorkspacePath('tools/fritzing-cli/autowire-settings.json');
+}
+async function loadAutowireSettings(): Promise<AutowireSettings> {
+  const raw = await readFile(autowireSettingsPath(), 'utf8').catch(() => undefined);
+  if (!raw) return { ...defaultAutowireSettings };
+  try {
+    return { ...defaultAutowireSettings, ...(JSON.parse(raw) as Partial<AutowireSettings>) };
+  } catch {
+    return { ...defaultAutowireSettings };
+  }
+}
+function sanitizeAutowireSettings(input: unknown): AutowireSettings {
+  const candidate = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const bool = (name: keyof AutowireSettings): boolean =>
+    typeof candidate[name] === 'boolean' ? candidate[name] as boolean : defaultAutowireSettings[name] as boolean;
+  const num = (name: 'boardGap' | 'partSpacing'): number => {
+    const value = Number(candidate[name]);
+    return Number.isFinite(value) && value >= 10 && value <= 300 ? value : defaultAutowireSettings[name];
+  };
+  return {
+    placeParts: bool('placeParts'),
+    resetRotations: bool('resetRotations'),
+    railJumpers: bool('railJumpers'),
+    wireSignals: bool('wireSignals'),
+    cleanOnly: bool('cleanOnly'),
+    boardGap: num('boardGap'),
+    partSpacing: num('partSpacing')
+  };
+}
+async function saveAutowireSettings(settings: AutowireSettings): Promise<void> {
+  await writeFile(autowireSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+}
 
 // Fritzing scene units are 90dpi.
 const SVG_DPI = 90;
@@ -487,6 +549,56 @@ function applyMat(matrix: Mat, point: PinPosition): PinPosition {
   return { x: a * point.x + c * point.y + e, y: b * point.x + d * point.y + f };
 }
 
+// Extract logical wire connections (part endpoints of each chained wire run).
+function extractWireConnections(xml: string): Array<{ color: string; ends: Array<{ modelIndex: string; connectorId: string }> }> {
+  const all = [...xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)].map(match => ({
+    moduleIdRef: (match[1] ?? '').match(/moduleIdRef="([^"]+)"/i)?.[1] ?? '',
+    modelIndex: (match[1] ?? '').match(/modelIndex="([^"]+)"/i)?.[1] ?? '',
+    body: match[2] ?? ''
+  }));
+  const byIndex = new Map(all.map(inst => [inst.modelIndex, inst]));
+  const wires = all.filter(inst => inst.moduleIdRef === 'WireModuleID');
+  const infos = wires.map((wire, index) => {
+    const bb = wire.body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1] ?? '';
+    return {
+      index,
+      color: bb.match(/color="([^"]+)"/i)?.[1] ?? '#404040',
+      connects: [...bb.matchAll(/<connect\b[^>]*connectorId="([^"]+)"[^>]*modelIndex="([^"]+)"/gi)].map(c => ({
+        connectorId: c[1],
+        modelIndex: c[2],
+        isWire: byIndex.get(c[2])?.moduleIdRef === 'WireModuleID'
+      }))
+    };
+  });
+  const indexByModel = new Map(wires.map((wire, index) => [wire.modelIndex, index]));
+  const visited = new Set<number>();
+  const connections: Array<{ color: string; ends: Array<{ modelIndex: string; connectorId: string }> }> = [];
+  for (const info of infos) {
+    if (visited.has(info.index)) continue;
+    const queue = [info.index];
+    visited.add(info.index);
+    const ends: Array<{ modelIndex: string; connectorId: string }> = [];
+    let color = info.color;
+    while (queue.length > 0) {
+      const current = infos[queue.pop() as number];
+      color = current.color;
+      for (const connect of current.connects) {
+        if (connect.isWire) {
+          const neighbor = indexByModel.get(connect.modelIndex);
+          if (neighbor !== undefined && !visited.has(neighbor)) {
+            visited.add(neighbor);
+            queue.push(neighbor);
+          }
+        } else {
+          ends.push({ modelIndex: connect.modelIndex, connectorId: connect.connectorId });
+        }
+      }
+    }
+    if (ends.length >= 2) connections.push({ color, ends: [ends[0], ends[1]] });
+  }
+  return connections;
+}
+
 function requireParam(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) {
@@ -641,6 +753,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 200, { instances: await listRunningFritzingInstances() });
       return;
     }
+    case 'GET /api/settings/autowire': {
+      sendJson(res, 200, await loadAutowireSettings());
+      return;
+    }
+    case 'POST /api/settings/autowire': {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await readRequestBody(req));
+      } catch {
+        throw new HttpError(400, 'Body must be valid JSON.');
+      }
+      const settings = sanitizeAutowireSettings(parsed);
+      await saveAutowireSettings(settings);
+      sendJson(res, 200, settings);
+      return;
+    }
     case 'GET /api/sketch/connections': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       const xml = await readSketchModel(sketchPath);
@@ -689,7 +817,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // Group chained wire segments into logical part-to-part connections.
       const indexByModel = new Map(wireInstances.map((wire, index) => [wire.modelIndex, index]));
       const visited = new Set<number>();
-      const connections: Array<{ from: string; to: string; color: string; segments: number }> = [];
+      const connections: Array<{ from: string; to: string; fromRef: string; toRef: string; color: string; segments: number }> = [];
       const floating: string[] = [];
       for (const info of wireInfos) {
         if (visited.has(info.index)) continue;
@@ -709,16 +837,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           }
         }
         const endpoints: string[] = [];
+        const endpointRefs: string[] = [];
         for (const segment of component) {
           for (const connect of segment.connects) {
             if (connect.isWire) continue;
             const target = byIndex.get(connect.modelIndex);
             if (!target) continue;
             endpoints.push(`${target.title || target.moduleIdRef}: ${await connectorName(target, connect.connectorId)}`);
+            endpointRefs.push(`${target.title || target.moduleIdRef}:${connect.connectorId}`);
           }
         }
         if (endpoints.length >= 2) {
-          connections.push({ from: endpoints[0], to: endpoints[1], color: component[0].color, segments: component.length });
+          connections.push({
+            from: endpoints[0],
+            to: endpoints[1],
+            fromRef: endpointRefs[0],
+            toRef: endpointRefs[1],
+            color: component[0].color,
+            segments: component.length
+          });
         } else {
           floating.push(`${wireInstances[component[0].index].title || 'Wire'} (${component.length} segment${component.length === 1 ? '' : 's'})`);
         }
@@ -730,6 +867,114 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         floating,
         wireSegments: wireInstances.length
       });
+      return;
+    }
+    case 'POST /api/sketch/connections': {
+      const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      let payload: { connections?: Array<{ from?: string; to?: string; color?: string }> };
+      try {
+        payload = JSON.parse(await readRequestBody(req));
+      } catch {
+        throw new HttpError(400, 'Body must be valid JSON: { "connections": [{ "from": "Part:connectorId", "to": "Part:connectorId", "color": "#rrggbb" }] }');
+      }
+      const requested = payload.connections;
+      if (!Array.isArray(requested) || requested.length === 0) {
+        throw new HttpError(400, 'JSON must contain a non-empty "connections" array.');
+      }
+
+      // All existing wires are replaced by the pasted list.
+      const xml = (await readSketchModel(sketchPath))
+        .replace(/\s*<instance\b[^>]*moduleIdRef="WireModuleID"[^>]*>[\s\S]*?<\/instance>/gi, '');
+
+      type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number; transform: Mat };
+      const instances: InstanceInfo[] = [];
+      for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
+        const attrs = match[1] ?? '';
+        const body = match[2] ?? '';
+        const view = body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1] ?? '';
+        const geometry = view.match(/<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
+        instances.push({
+          moduleIdRef: attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '',
+          modelIndex: attrs.match(/\bmodelIndex="([^"]+)"/i)?.[1] ?? '',
+          title: (body.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim(),
+          x: Number(geometry.match(/\bx="([^"]+)"/i)?.[1] ?? '0'),
+          y: Number(geometry.match(/\by="([^"]+)"/i)?.[1] ?? '0'),
+          transform: parseInstanceTransform(view)
+        });
+      }
+      const byLabel = new Map<string, InstanceInfo>();
+      for (const inst of instances) {
+        if (inst.title) byLabel.set(inst.title.toLowerCase(), inst);
+        byLabel.set(inst.modelIndex, inst);
+      }
+
+      const errors: string[] = [];
+      type ResolvedEnd = { inst: InstanceInfo; connectorId: string; point: PinPosition; kind: WireEndTarget['kind'] };
+      const resolveEnd = async (ref: string | undefined, index: number, side: string): Promise<ResolvedEnd | undefined> => {
+        if (!ref || typeof ref !== 'string' || !ref.includes(':')) {
+          errors.push(`Connection ${index + 1} ${side}: expected "Part:connectorId", got ${JSON.stringify(ref)}`);
+          return undefined;
+        }
+        const splitAt = ref.lastIndexOf(':');
+        const partLabel = ref.slice(0, splitAt).trim();
+        const connectorId = ref.slice(splitAt + 1).trim();
+        const inst = byLabel.get(partLabel.toLowerCase());
+        if (!inst) {
+          errors.push(`Connection ${index + 1} ${side}: no part titled '${partLabel}'`);
+          return undefined;
+        }
+        const fzpPath = await findFzpByModuleId(inst.moduleIdRef);
+        if (!fzpPath) {
+          errors.push(`Connection ${index + 1} ${side}: part definition not found for '${partLabel}'`);
+          return undefined;
+        }
+        const pin = await findPinPosition(fzpPath, connectorId);
+        if (!pin) {
+          errors.push(`Connection ${index + 1} ${side}: connector '${connectorId}' not found on '${partLabel}'`);
+          return undefined;
+        }
+        const mapped = applyMat(inst.transform, pin);
+        return {
+          inst,
+          connectorId,
+          point: { x: inst.x + mapped.x, y: inst.y + mapped.y },
+          kind: /breadboard/i.test(inst.moduleIdRef) ? 'breadboardPin' : 'part'
+        };
+      };
+
+      const resolved: Array<{ from: ResolvedEnd; to: ResolvedEnd; color: string }> = [];
+      for (let i = 0; i < requested.length; i += 1) {
+        const [from, to] = await Promise.all([
+          resolveEnd(requested[i].from, i, 'from'),
+          resolveEnd(requested[i].to, i, 'to')
+        ]);
+        if (from && to) {
+          const color = typeof requested[i].color === 'string' && /^#[0-9a-f]{3,8}$/i.test(requested[i].color as string)
+            ? (requested[i].color as string)
+            : '#404040';
+          resolved.push({ from, to, color });
+        }
+      }
+      if (errors.length > 0) {
+        throw new HttpError(400, `Connections were not applied:\n${errors.join('\n')}`);
+      }
+
+      const wireBlocks: string[] = [];
+      resolved.forEach((connection, index) => {
+        wireBlocks.push(...routeWire({
+          baseTitle: `JsonWire_${index + 1}`,
+          color: connection.color,
+          start: connection.from.point,
+          end: connection.to.point,
+          startTarget: { kind: connection.from.kind, modelIndex: connection.from.inst.modelIndex, connectorId: connection.from.connectorId },
+          endTarget: { kind: connection.to.kind, modelIndex: connection.to.inst.modelIndex, connectorId: connection.to.connectorId }
+        }));
+      });
+
+      const updated = xml.replace(/<\/instances>/i, `${wireBlocks.join('')}\n    </instances>`);
+      if (updated === xml) throw new HttpError(500, 'Could not insert wires into the sketch.');
+      await writeSketchModel(sketchPath, updated, true);
+      sendJson(res, 200, { applied: resolved.length });
       return;
     }
     case 'POST /api/sketch/open': {
@@ -761,7 +1006,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     case 'POST /api/sketch/autowire': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       // Start from a clean slate: remove every existing wire, then wire everything fresh.
-      const xml = (await readSketchModel(sketchPath))
+      const originalXml = await readSketchModel(sketchPath);
+      const xml = originalXml
         .replace(/\s*<instance\b[^>]*moduleIdRef="WireModuleID"[^>]*>[\s\S]*?<\/instance>/gi, '');
 
       const boolParam = (name: string, fallback: boolean): boolean => {
@@ -772,14 +1018,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const value = Number(url.searchParams.get(name));
         return Number.isFinite(value) && value > 0 ? value : fallback;
       };
+      // Server-stored settings are the source of truth; query params can override per call.
+      const stored = await loadAutowireSettings();
       const settings = {
-        placeParts: boolParam('place', true),
-        resetRotations: boolParam('resetRotation', true),
-        railJumpers: boolParam('jumpers', true),
-        wireSignals: boolParam('signals', true),
-        boardGap: numParam('gap', 60),
-        partSpacing: numParam('spacing', 45)
+        placeParts: boolParam('place', stored.placeParts),
+        resetRotations: boolParam('resetRotation', stored.resetRotations),
+        railJumpers: boolParam('jumpers', stored.railJumpers),
+        wireSignals: boolParam('signals', stored.wireSignals),
+        cleanOnly: boolParam('cleanOnly', stored.cleanOnly),
+        boardGap: numParam('gap', stored.boardGap),
+        partSpacing: numParam('spacing', stored.partSpacing)
       };
+      // Clean-only keeps the existing nets and just re-places and re-routes them.
+      const preservedConnections = settings.cleanOnly ? extractWireConnections(originalXml) : [];
 
       type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number; transform: Mat };
       const instances: InstanceInfo[] = [];
@@ -908,6 +1159,30 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           '$1'
         );
       };
+      // Some parts are drawn with pins on the top edge; flip those 180 degrees so the
+      // pins face the breadboard below the sensor row.
+      const orientPinsDown = async (part: InstanceInfo) => {
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        if (!fzpPath) return;
+        const svg = await readPartImageSvg(fzpPath);
+        const size = svg ? svgSizeToScene(svg) : undefined;
+        if (!size) return;
+        const definition = await readFile(fzpPath, 'utf8').catch(() => '');
+        const ids = [...definition.matchAll(/<connector[^>]*\bid="([^"]+)"/gi)].map(match => match[1]);
+        const ys: number[] = [];
+        for (const id of ids) {
+          const pin = await findPinPosition(fzpPath, id);
+          if (pin) ys.push(pin.y);
+        }
+        if (ys.length === 0) return;
+        const averageY = ys.reduce((sum, value) => sum + value, 0) / ys.length;
+        if (averageY >= size.height / 2) return;
+        part.transform = [-1, 0, 0, -1, size.width, size.height];
+        workingXml = workingXml.replace(
+          new RegExp(`(<instance\\b[^>]*modelIndex="${part.modelIndex}"[^>]*>[\\s\\S]*?<breadboardView[^>]*>[\\s\\S]*?<geometry\\b[^>]*\\/?>)`, 'i'),
+          `$1\n                    <transform m11="-1" m12="0" m13="0" m21="0" m22="-1" m23="0" m31="${size.width}" m32="${size.height}" m33="1"/>`
+        );
+      };
       let boardCenterY: number | undefined;
       const breadboardLocal = await localBox(breadboard);
       if (breadboardLocal) {
@@ -930,7 +1205,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           for (const part of parts) {
             if (part === breadboard || part === mcu) continue;
             if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
-            if (settings.resetRotations) resetRotation(part);
+            if (settings.resetRotations) {
+              resetRotation(part);
+              await orientPinsDown(part);
+            }
             const box = await localBox(part);
             if (box) sensorEntries.push({ part, box });
           }
@@ -1015,7 +1293,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         return routeWire(options);
       };
 
-      for (const part of parts) {
+      for (const part of settings.cleanOnly ? [] : parts) {
         if (part === breadboard) continue;
         if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
         const fzpPath = await findFzpByModuleId(part.moduleIdRef);
@@ -1155,7 +1433,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // last column, black on the second-to-last so the jumpers do not overlap.
       const plusColumn = railColumns.at(-1);
       const minusColumn = railColumns.at(-2) ?? plusColumn;
-      if (plusColumn !== undefined && minusColumn !== undefined && settings.railJumpers) {
+      if (plusColumn !== undefined && minusColumn !== undefined && settings.railJumpers && !settings.cleanOnly) {
         const jumpers: Array<{ fromPin: string; toPin: string; color: string; label: string }> = [
           { fromPin: `pin${plusColumn}W`, toPin: `pin${plusColumn}Y`, color: '#cc1414', label: '+ rails' },
           { fromPin: `pin${minusColumn}X`, toPin: `pin${minusColumn}Z`, color: '#404040', label: '- rails' }
@@ -1177,6 +1455,44 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
             endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: jumper.toPin }
           }));
           wired.push({ from: `Breadboard ${jumper.fromPin}`, to: `Breadboard ${jumper.toPin} (${jumper.label})` });
+        }
+      }
+
+      // Clean-only: re-route the preserved connections without changing any net.
+      if (settings.cleanOnly) {
+        const scenePointOf = (owner: InstanceInfo, pin: PinPosition): PinPosition => {
+          const mapped = applyMat(owner.transform, pin);
+          return { x: owner.x + mapped.x, y: owner.y + mapped.y };
+        };
+        let keepIndex = 0;
+        for (const connection of preservedConnections) {
+          const [a, b] = connection.ends;
+          const fromInst = instances.find(inst => inst.modelIndex === a.modelIndex);
+          const toInst = instances.find(inst => inst.modelIndex === b.modelIndex);
+          if (!fromInst || !toInst) continue;
+          const [fromFzp, toFzp] = await Promise.all([
+            findFzpByModuleId(fromInst.moduleIdRef),
+            findFzpByModuleId(toInst.moduleIdRef)
+          ]);
+          if (!fromFzp || !toFzp) continue;
+          const [fromPin, toPin] = await Promise.all([
+            findPinPosition(fromFzp, a.connectorId),
+            findPinPosition(toFzp, b.connectorId)
+          ]);
+          if (!fromPin || !toPin) continue;
+          wireBlocks.push(...routeSmart({
+            baseTitle: `AutoWireKeep_${keepIndex++}`,
+            color: connection.color,
+            start: scenePointOf(fromInst, fromPin),
+            end: scenePointOf(toInst, toPin),
+            startTarget: { kind: fromInst === breadboard ? 'breadboardPin' : 'part', modelIndex: a.modelIndex, connectorId: a.connectorId },
+            endTarget: { kind: toInst === breadboard ? 'breadboardPin' : 'part', modelIndex: b.modelIndex, connectorId: b.connectorId },
+            exclude: [a.modelIndex, b.modelIndex]
+          }));
+          wired.push({
+            from: `${fromInst.title || fromInst.moduleIdRef} ${a.connectorId}`,
+            to: `${toInst.title || toInst.moduleIdRef} ${b.connectorId} (kept)`
+          });
         }
       }
 

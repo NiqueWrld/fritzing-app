@@ -1,8 +1,11 @@
+import { fetchJson } from './api'
+
 export type AutowireSettings = {
   placeParts: boolean
   resetRotations: boolean
   railJumpers: boolean
   wireSignals: boolean
+  cleanOnly: boolean
   boardGap: number
   partSpacing: number
 }
@@ -12,34 +15,20 @@ export const defaultAutowireSettings: AutowireSettings = {
   resetRotations: true,
   railJumpers: true,
   wireSignals: true,
+  cleanOnly: false,
   boardGap: 60,
   partSpacing: 45,
 }
 
-const storageKey = 'fritzing.autowire.settings'
-
-export function loadAutowireSettings(): AutowireSettings {
-  try {
-    const raw = localStorage.getItem(storageKey)
-    if (!raw) return defaultAutowireSettings
-    return { ...defaultAutowireSettings, ...(JSON.parse(raw) as Partial<AutowireSettings>) }
-  } catch {
-    return defaultAutowireSettings
-  }
+// The server owns the settings; the UI just reads and writes them.
+export function loadAutowireSettings(): Promise<AutowireSettings> {
+  return fetchJson<AutowireSettings>('/api/settings/autowire')
 }
 
-export function saveAutowireSettings(settings: AutowireSettings): void {
-  localStorage.setItem(storageKey, JSON.stringify(settings))
-}
-
-export function autowireQueryParams(settings: AutowireSettings): string {
-  const params = new URLSearchParams({
-    place: settings.placeParts ? '1' : '0',
-    resetRotation: settings.resetRotations ? '1' : '0',
-    jumpers: settings.railJumpers ? '1' : '0',
-    signals: settings.wireSignals ? '1' : '0',
-    gap: String(settings.boardGap),
-    spacing: String(settings.partSpacing),
+export function saveAutowireSettings(settings: AutowireSettings): Promise<AutowireSettings> {
+  return fetchJson<AutowireSettings>('/api/settings/autowire', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
   })
-  return params.toString()
 }

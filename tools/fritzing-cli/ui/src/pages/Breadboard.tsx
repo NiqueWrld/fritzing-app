@@ -4,7 +4,6 @@ import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
 import { useTheme } from '../context/ThemeContext'
 import { fetchJson } from '../lib/api'
-import { autowireQueryParams, loadAutowireSettings } from '../lib/autowireSettings'
 
 async function fetchSvg(sketchPath: string): Promise<string> {
   const response = await fetch(`/api/sketch/svg?path=${encodeURIComponent(sketchPath)}&t=${Date.now()}`)
@@ -163,9 +162,9 @@ export default function Breadboard() {
   const autoWire = () => {
     if (!currentSketch) return
     setBusy(true)
-    const params = autowireQueryParams(loadAutowireSettings())
+    // The server applies its stored autowire settings.
     fetchJson<{ wired: Array<{ from: string; to: string }> }>(
-      `/api/sketch/autowire?path=${encodeURIComponent(currentSketch)}&${params}`,
+      `/api/sketch/autowire?path=${encodeURIComponent(currentSketch)}`,
       { method: 'POST' }
     )
       .then(() => {
