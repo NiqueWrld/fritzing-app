@@ -687,7 +687,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     case 'GET /api/sketch/svg': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
-      const svgPath = join(getProjectLiveFolder(sketchPath), 'current.svg');
+      const liveFolder = getProjectLiveFolder(sketchPath);
+      const view = url.searchParams.get('view');
+      let svgPath = join(liveFolder, 'current.svg');
+      if (view) {
+        // Fritzing's -svg export writes one file per view (…_schematic.svg, …_pcb.svg, …).
+        const entries = await readdir(liveFolder).catch(() => []);
+        const match = entries
+          .filter(name => name.toLowerCase().endsWith('.svg') && name.toLowerCase().includes(view.toLowerCase()))
+          .sort()
+          .at(-1);
+        if (!match) {
+          throw new HttpError(404, `No ${view} export exists yet. Run a snapshot first.`);
+        }
+        svgPath = join(liveFolder, match);
+      }
       try {
         const svg = await readFile(svgPath, 'utf8');
         res.writeHead(200, { 'Content-Type': 'image/svg+xml' });

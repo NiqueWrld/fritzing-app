@@ -1,4 +1,4 @@
-import { CircuitryIcon, CpuIcon, FileCodeIcon, GearIcon, PlugsConnectedIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
+import { CircuitryIcon, CpuIcon, FileCodeIcon, GearIcon, PlugsConnectedIcon, PuzzlePieceIcon, TreeStructureIcon } from '@phosphor-icons/react'
 import { NavLink } from 'react-router-dom'
 import { useSketch } from '../../context/SketchContext'
 import { useTheme } from '../../context/ThemeContext'
@@ -7,6 +7,7 @@ const links = [
   { to: '/', end: true, icon: FileCodeIcon, label: 'Sketches' },
   { to: '/parts', end: false, icon: PuzzlePieceIcon, label: 'Parts' },
   { to: '/breadboard', end: false, icon: CpuIcon, label: 'Breadboard' },
+  { to: '/schematic', end: false, icon: TreeStructureIcon, label: 'Schematic' },
   { to: '/connections', end: false, icon: PlugsConnectedIcon, label: 'Connections' },
   { to: '/settings', end: false, icon: GearIcon, label: 'Settings' },
 ]

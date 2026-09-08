@@ -1,4 +1,4 @@
-import { ArrowSquareOutIcon, CameraIcon, CornersInIcon, FrameCornersIcon, LightningIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
+import { ArrowSquareOutIcon, CameraIcon, CopyIcon, CornersInIcon, FrameCornersIcon, LightningIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
@@ -27,6 +27,33 @@ type DiagramPart = {
 }
 type DiagramWire = { x1: number; y1: number; x2: number; y2: number; color: string; width: number }
 type Diagram = { parts: DiagramPart[]; wires: DiagramWire[] }
+
+// Rasterize an SVG document string to a PNG blob at 2x for crisp output.
+async function svgToPngBlob(svgText: string, width: number, height: number): Promise<Blob> {
+  const image = new Image()
+  const svgUrl = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }))
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve
+      image.onerror = () => reject(new Error('Could not render the image.'))
+      image.src = svgUrl
+    })
+    const scale = 2
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(width * scale))
+    canvas.height = Math.max(1, Math.round(height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas is not available.')
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error('Could not encode the image.'))), 'image/png')
+    })
+  } finally {
+    URL.revokeObjectURL(svgUrl)
+  }
+}
 
 // Fallback for parts without server-computed sizes: scene 90dpi vs browser 96dpi px.
 const sceneScale = 90 / 96
@@ -184,6 +211,65 @@ export default function Breadboard() {
       .catch((requestError: Error) => setError(requestError.message))
   }
 
+  const copyImage = async () => {
+    try {
+      let blob: Blob
+      if (mode === 'live' && diagram && liveBounds) {
+        const { drawableParts, width, height, offsetX, offsetY } = liveBounds
+        const scale = 2
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(width * scale))
+        canvas.height = Math.max(1, Math.round(height * scale))
+        const context = canvas.getContext('2d')
+        if (!context) throw new Error('Canvas is not available.')
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.scale(scale, scale)
+        for (const part of drawableParts) {
+          const image = new Image()
+          await new Promise(resolve => {
+            image.onload = resolve
+            image.onerror = resolve
+            image.src = `/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`
+          })
+          if (!image.naturalWidth) continue
+          context.save()
+          context.translate(part.x - offsetX, part.y - offsetY)
+          if (part.transform) context.transform(...part.transform)
+          context.drawImage(
+            image,
+            0,
+            0,
+            part.width ?? image.naturalWidth * sceneScale,
+            part.height ?? image.naturalHeight * sceneScale
+          )
+          context.restore()
+        }
+        for (const wire of diagram.wires) {
+          context.strokeStyle = wire.color
+          context.lineWidth = wire.width
+          context.lineCap = 'round'
+          context.beginPath()
+          context.moveTo(wire.x1 - offsetX, wire.y1 - offsetY)
+          context.lineTo(wire.x2 - offsetX, wire.y2 - offsetY)
+          context.stroke()
+        }
+        blob = await new Promise((resolve, reject) => {
+          canvas.toBlob(result => (result ? resolve(result) : reject(new Error('Could not encode the image.'))), 'image/png')
+        })
+      } else if (mode === 'snapshot' && svg) {
+        const element = canvasRef.current?.querySelector('svg')
+        blob = await svgToPngBlob(svg, element?.width.baseVal.value ?? 800, element?.height.baseVal.value ?? 600)
+      } else {
+        return
+      }
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+      setError(undefined)
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : String(copyError))
+    }
+  }
+
   if (!currentSketch) {
     return (
       <section>
@@ -270,6 +356,15 @@ export default function Breadboard() {
           >
             <ArrowSquareOutIcon size={18} />
             Open in Fritzing
+          </button>
+          <button
+            type="button"
+            onClick={copyImage}
+            className={`flex items-center gap-2 rounded-lg border ${theme.secondary.border} px-3 py-2 text-sm transition ${theme.primary.hoverBorder}`}
+            title="Copy the current view to the clipboard as an image"
+          >
+            <CopyIcon size={18} />
+            Copy image
           </button>
           {mode === 'snapshot' && (
             <button
