@@ -6,7 +6,7 @@ import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import { constants, watch } from 'node:fs';
 import { access, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { EOL } from 'node:os';
+import { EOL, homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as z from 'zod/v4';
@@ -159,17 +159,20 @@ export async function writeSketchModel(sketchPath: string, xml: string, createBa
 }
 
 export async function findParts(query: string, limit: number): Promise<Array<{ moduleId: string; title: string; path: string }>> {
-  const partsRoot = getPartsRoot();
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return [];
 
   const matches: Array<{ moduleId: string; title: string; path: string }> = [];
-  const entries = await readdir(partsRoot, { withFileTypes: true });
-  const folders = entries.filter(entry => entry.isDirectory()).map(entry => join(partsRoot, entry.name));
+  const folders: string[] = [];
+  for (const partsRoot of getPartsRoots()) {
+    const entries = await readdir(partsRoot, { withFileTypes: true }).catch(() => []);
+    // Skip each root's svg tree; part definitions live in the sibling folders.
+    folders.push(...entries.filter(entry => entry.isDirectory() && entry.name.toLowerCase() !== 'svg').map(entry => join(partsRoot, entry.name)));
+  }
   while (folders.length > 0 && matches.length < limit) {
     const folder = folders.pop();
     if (!folder) continue;
-    for (const entry of await readdir(folder, { withFileTypes: true })) {
+    for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
       if (matches.length >= limit) break;
       const entryPath = join(folder, entry.name);
       if (entry.isDirectory()) {
@@ -181,6 +184,8 @@ export async function findParts(query: string, limit: number): Promise<Array<{ m
       const content = await readFile(entryPath, 'utf8');
       const moduleId = content.match(/<module\b[^>]*\bmoduleId="([^"]+)"/i)?.[1] ?? '';
       const title = content.match(/<title>([^<]+)<\/title>/i)?.[1] ?? entry.name;
+      // Folder redirection can expose the same part under two roots.
+      if (moduleId && matches.some(match => match.moduleId === moduleId)) continue;
       if (`${entry.name} ${moduleId} ${title}`.toLowerCase().includes(normalizedQuery)) {
         matches.push({ moduleId, title, path: entryPath });
       }
@@ -191,6 +196,22 @@ export async function findParts(query: string, limit: number): Promise<Array<{ m
 
 export function getPartsRoot(): string {
   return process.env.FRITZING_PARTS_PATH ?? resolve(repoRoot, '../fritzing-parts');
+}
+
+// Parts live in the external fritzing-parts repo, the app's bundled resources/parts,
+// and the user's Fritzing data folders (custom/imported parts).
+export function getPartsRoots(): string[] {
+  const roots = [getPartsRoot(), resolve(repoRoot, 'resources/parts')];
+  const userRoots = [
+    process.env.FRITZING_USER_PARTS,
+    process.env.APPDATA ? join(process.env.APPDATA, 'Fritzing', 'Fritzing', 'local_parts') : undefined,
+    process.env.OneDrive ? join(process.env.OneDrive, 'Documents', 'Fritzing', 'parts') : undefined,
+    join(homedir(), 'Documents', 'Fritzing', 'parts')
+  ];
+  for (const candidate of userRoots) {
+    if (candidate && !roots.includes(candidate)) roots.push(candidate);
+  }
+  return roots;
 }
 
 export function runProcess(command: string, args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {

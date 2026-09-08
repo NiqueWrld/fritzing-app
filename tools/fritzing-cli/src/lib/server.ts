@@ -5,7 +5,7 @@ import { basename, dirname, extname, join } from 'node:path';
 import {
   findParts,
   findSketches,
-  getPartsRoot,
+  getPartsRoots,
   getProjectLiveFolder,
   listPartsInSketch,
   listRunningFritzingInstances,
@@ -16,21 +16,6 @@ import {
   snapshotProject,
   writeSketchModel
 } from './cli.js';
-
-// Parts live in the external fritzing-parts repo, the app's bundled resources/parts,
-// and the user's Fritzing data folder (custom/imported parts).
-function getPartsRoots(): string[] {
-  const roots = [getPartsRoot(), resolveWorkspacePath('resources/parts')];
-  const documents = [
-    process.env.FRITZING_USER_PARTS,
-    process.env.OneDrive ? join(process.env.OneDrive, 'Documents', 'Fritzing', 'parts') : undefined,
-    join(homedir(), 'Documents', 'Fritzing', 'parts')
-  ];
-  for (const candidate of documents) {
-    if (candidate && !roots.includes(candidate)) roots.push(candidate);
-  }
-  return roots;
-}
 
 const moduleIdCache = new Map<string, string>();
 
@@ -89,11 +74,14 @@ async function readPartImageSvg(fzpPath: string): Promise<string | undefined> {
   const image = fzp.match(/<breadboardView\b[^>]*>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
   if (!image) return undefined;
   const family = basename(dirname(fzpPath));
+  // Imported parts (AppData local_parts) keep images in subfolders next to the fzp.
+  const candidates = [join(dirname(fzpPath), image)];
   for (const root of getPartsRoots()) {
-    for (const candidate of [join(root, 'svg', family, image), join(root, 'svg', 'core', image)]) {
-      const svg = await readFile(candidate, 'utf8').catch(() => undefined);
-      if (svg) return svg;
-    }
+    candidates.push(join(root, 'svg', family, image), join(root, 'svg', 'core', image));
+  }
+  for (const candidate of candidates) {
+    const svg = await readFile(candidate, 'utf8').catch(() => undefined);
+    if (svg) return svg;
   }
   return undefined;
 }
@@ -480,10 +468,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       if (!contentType) {
         throw new HttpError(415, `Unsupported part image type: ${image}`);
       }
-      const candidates = getPartsRoots().flatMap(root => [
-        join(root, 'svg', family, image),
-        join(root, 'svg', 'core', image)
-      ]);
+      const candidates = [
+        join(dirname(fzpPath), image),
+        ...getPartsRoots().flatMap(root => [
+          join(root, 'svg', family, image),
+          join(root, 'svg', 'core', image)
+        ])
+      ];
       for (const imagePath of candidates) {
         const content = await readFile(imagePath).catch(() => undefined);
         if (content) {
@@ -525,7 +516,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const breadboardFzp = await findFzpByModuleId(breadboard.moduleIdRef);
       if (!breadboardFzp) throw new HttpError(404, 'The breadboard part definition was not found.');
 
-      const groundName = /^(gnd|ground|-|0v|vss)$/i;
+      const groundName = /^(gnd|ground|-|g|0v|vss)$/i;
       const wired: Array<{ from: string; to: string }> = [];
       const wireBlocks: string[] = [];
       // Use the rail pins that actually exist, in order, starting from the first one.
@@ -541,6 +532,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         Number(/arduino|uno|mega|nano|esp|micro:bit|raspberry/i.test(b.moduleIdRef)) -
         Number(/arduino|uno|mega|nano|esp|micro:bit|raspberry/i.test(a.moduleIdRef)));
 
+      // Free MCU pins for the parts' signal lines: analog A*, digital D2+ (D0/D1 are serial).
+      const mcu = parts.find(part => /arduino|uno|mega|nano|esp|micro:bit/i.test(part.moduleIdRef));
+      const mcuFzp = mcu ? await findFzpByModuleId(mcu.moduleIdRef) : undefined;
+      const mcuDefinition = mcuFzp ? await readFile(mcuFzp, 'utf8').catch(() => '') : '';
+      const mcuConnectors = [...mcuDefinition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
+        .map(match => ({ id: match[1], name: match[2] }));
+      const seenPinNames = new Set<string>();
+      const analogQueue = mcuConnectors.filter(connector => {
+        const name = connector.name.toUpperCase();
+        if (!/^A\d+/.test(name) || seenPinNames.has(name)) return false;
+        seenPinNames.add(name);
+        return true;
+      });
+      const digitalQueue = mcuConnectors.filter(connector => {
+        const match = connector.name.toUpperCase().match(/^D(\d+)/);
+        if (!match || Number(match[1]) < 2 || seenPinNames.has(connector.name.toUpperCase())) return false;
+        seenPinNames.add(connector.name.toUpperCase());
+        return true;
+      });
+      const signalColors = ['#ffe500', '#33cc00', '#3366ff', '#ff9900', '#9900cc', '#00cccc'];
+      let signalCount = 0;
+
       for (const part of parts) {
         if (part === breadboard) continue;
         if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
@@ -550,12 +563,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const connectors = [...definition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
           .map(match => ({ id: match[1], name: match[2] }));
         // Prefer 5V over generic supply names over VIN; last match wins within a tier (power headers are declared last).
-        const powerTiers = [/^(5v|\+5v)$/i, /^(vcc|vdd|vs|v\+|\+|pwr|power|3v3|3\.3v)$/i, /^vin$/i];
+        const powerTiers = [/^(5v|\+5v)$/i, /^(vcc|vdd|vs|v|v\+|\+|pwr|power|3v3|3\.3v)$/i, /^vin$/i];
         const powerId = powerTiers
           .map(tier => connectors.filter(connector => tier.test(connector.name)).at(-1)?.id)
           .find(id => id !== undefined);
         const groundId = connectors.filter(connector => groundName.test(connector.name)).at(-1)?.id;
-        if (!powerId && !groundId) continue;
+        if (!powerId && !groundId && part !== mcu && mcuConnectors.length === 0) continue;
 
         const railColumn = railColumns[Math.min(railSlot, railColumns.length - 1)];
         const railPlus = `pin${railColumn}W`;
@@ -596,6 +609,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
         if ((powerId && powerPin) || (groundId && groundPin)) {
           railSlot += 1;
+        }
+
+        // Remaining pins are signal lines: wire each to a free MCU pin (analog A*, else digital D2+).
+        if (part !== mcu && mcu && mcuFzp) {
+          const ncName = /^(nc|n\/c|not connected)$/i;
+          const signalConnectors = connectors.filter(connector =>
+            connector.id !== powerId && connector.id !== groundId &&
+            !groundName.test(connector.name) && !ncName.test(connector.name) &&
+            !/^(5v|\+5v|vcc|vdd|vin|3v3|3\.3v|\+|v)$/i.test(connector.name));
+          for (const signal of signalConnectors) {
+            const isAnalog = /^(a\d|ao|aout|analog)/i.test(signal.name);
+            const mcuPin = (isAnalog ? analogQueue : digitalQueue).shift() ?? digitalQueue.shift() ?? analogQueue.shift();
+            if (!mcuPin) break;
+            const [signalPin, mcuPinPosition] = await Promise.all([
+              findPinPosition(fzpPath, signal.id),
+              findPinPosition(mcuFzp, mcuPin.id)
+            ]);
+            if (!signalPin || !mcuPinPosition) continue;
+            wireBlocks.push(...routeWire({
+              baseTitle: `AutoWireSig_${part.modelIndex}_${signal.id}`,
+              color: signalColors[signalCount++ % signalColors.length],
+              start: scenePoint(part, signalPin),
+              end: scenePoint(mcu, mcuPinPosition),
+              startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: signal.id },
+              endTarget: { kind: 'part', modelIndex: mcu.modelIndex, connectorId: mcuPin.id }
+            }));
+            wired.push({ from: `${label} ${signal.name} (${signal.id})`, to: `${mcu.title || 'MCU'} ${mcuPin.name}` });
+          }
         }
       }
 
