@@ -6,7 +6,7 @@ import { useTheme } from '../context/ThemeContext'
 import { fetchJson } from '../lib/api'
 
 type ConnectionsReport = {
-  parts: Array<{ title: string; moduleIdRef: string }>
+  parts: Array<{ title: string; moduleIdRef: string; connectors: Array<{ id: string; name: string }> }>
   connections: Array<{ from: string; to: string; fromRef: string; toRef: string; color: string; segments: number }>
   floating: string[]
   wireSegments: number
@@ -36,7 +36,14 @@ export default function Connections() {
 
   const editableJson = () =>
     JSON.stringify(
-      { connections: (report?.connections ?? []).map(c => ({ from: c.fromRef, to: c.toRef, color: c.color })) },
+      {
+        parts: (report?.parts ?? []).map(part => ({
+          title: part.title,
+          moduleIdRef: part.moduleIdRef,
+          connectors: part.connectors,
+        })),
+        connections: (report?.connections ?? []).map(c => ({ from: c.fromRef, to: c.toRef, color: c.color })),
+      },
       null,
       2
     )
@@ -163,10 +170,15 @@ export default function Connections() {
           </button>
 
           <h3 className="mb-2 mt-6 text-sm font-medium">Parts ({report.parts.length})</h3>
-          <ul className="space-y-1">
+          <ul className="space-y-2">
             {report.parts.map((part, index) => (
               <li key={index} className={`text-sm ${theme.tint.muted}`}>
                 {part.title} <span className={`font-mono text-xs ${theme.tint.faint}`}>[{part.moduleIdRef}]</span>
+                {part.connectors.length > 0 && (
+                  <p className={`mt-0.5 font-mono text-xs ${theme.tint.faint}`}>
+                    {part.connectors.map(connector => `${connector.name} (${connector.id})`).join(' · ')}
+                  </p>
+                )}
               </li>
             ))}
           </ul>

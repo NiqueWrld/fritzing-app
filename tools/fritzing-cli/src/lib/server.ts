@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -131,10 +131,10 @@ function svgSizeToScene(svg: string): { width: number; height: number } | undefi
   return width !== undefined && height !== undefined ? { width, height } : undefined;
 }
 
-async function readPartImageSvg(fzpPath: string): Promise<string | undefined> {
+async function readPartImageSvg(fzpPath: string, viewTag = 'breadboardView'): Promise<string | undefined> {
   const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
   if (!fzp) return undefined;
-  const image = fzp.match(/<breadboardView\b[^>]*>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
+  const image = fzp.match(new RegExp(`<${viewTag}\\b[^>]*>[\\s\\S]*?<layers[^>]*\\bimage="([^"]+)"`, 'i'))?.[1];
   if (!image) return undefined;
   const family = basename(dirname(fzpPath));
   // Imported parts (AppData local_parts) keep images in subfolders next to the fzp.
@@ -643,8 +643,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     case 'GET /api/sketch/diagram': {
       // Mirrors SketchWidget::loadFromModelParts: each instance is placed at its
-      // breadboardView <geometry x y z>; wires run from (x+x1,y+y1) to (x+x2,y+y2).
+      // per-view <geometry x y z>; wires run from (x+x1,y+y1) to (x+x2,y+y2).
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      const viewTag = url.searchParams.get('view') === 'schematic' ? 'schematicView' : 'breadboardView';
       const xml = await readSketchModel(sketchPath);
       const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number; transform?: Mat }> = [];
       const wires: Array<{ x1: number; y1: number; x2: number; y2: number; color: string; width: number }> = [];
@@ -653,7 +654,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const body = match[2] ?? '';
         const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
         const title = (body.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim();
-        const view = body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1];
+        // Parts never placed in this view have no geometry; fall back to breadboard placement.
+        const view = body.match(new RegExp(`<${viewTag}[^>]*>([\\s\\S]*?)</${viewTag}>`, 'i'))?.[1]
+          ?? body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1];
         if (!view) continue;
         const geometryAttrs = view.match(/<geometry\b([^>]*?)\/?>/i)?.[1] ?? '';
         const num = (name: string) => Number(geometryAttrs.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1] ?? '0');
@@ -674,7 +677,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       await Promise.all(parts.map(async part => {
         const fzpPath = await findFzpByModuleId(part.moduleIdRef);
         if (!fzpPath) return;
-        const svg = await readPartImageSvg(fzpPath);
+        const svg = await readPartImageSvg(fzpPath, viewTag);
         if (!svg) return;
         const size = svgSizeToScene(svg);
         if (size) {
@@ -704,7 +707,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       }
       try {
         const svg = await readFile(svgPath, 'utf8');
-        res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+        // Tell the client when the sketch changed after the export was made.
+        const [sketchStat, svgStat] = await Promise.all([
+          stat(sketchPath).catch(() => undefined),
+          stat(svgPath).catch(() => undefined)
+        ]);
+        const stale = sketchStat && svgStat && sketchStat.mtimeMs > svgStat.mtimeMs;
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'X-Svg-Stale': stale ? '1' : '0' });
         res.end(svg);
       } catch {
         throw new HttpError(404, 'No SVG snapshot exists yet. Run a snapshot first.');
@@ -735,9 +744,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const fzp = await readFile(fzpPath, 'utf8').catch(() => {
         throw new HttpError(404, `Part definition not found: ${fzpPath}`);
       });
-      const image = fzp.match(/<breadboardView\b[^>]*>[\s\S]*?<layers[^>]*\bimage="([^"]+)"/i)?.[1];
+      const imageViewTag = url.searchParams.get('view') === 'schematic' ? 'schematicView' : 'breadboardView';
+      const image = fzp.match(new RegExp(`<${imageViewTag}\\b[^>]*>[\\s\\S]*?<layers[^>]*\\bimage="([^"]+)"`, 'i'))?.[1];
       if (!image) {
-        throw new HttpError(404, 'Part has no breadboard image.');
+        throw new HttpError(404, `Part has no ${imageViewTag} image.`);
       }
       // Images live at <partsRoot>/svg/<family>/<image>; family mirrors the fzp folder (core, contrib, obsolete).
       const family = basename(dirname(fzpPath));
@@ -875,8 +885,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
       }
 
+      // Full connector lists per part so consumers can build valid connection refs.
+      const partConnectors = new Map<string, Array<{ id: string; name: string }>>();
+      for (const part of partInstances) {
+        if (partConnectors.has(part.moduleIdRef)) continue;
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        const definition = fzpPath ? await readFile(fzpPath, 'utf8').catch(() => '') : '';
+        partConnectors.set(part.moduleIdRef, [...definition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
+          .map(match => ({ id: match[1], name: match[2] })));
+      }
+
       sendJson(res, 200, {
-        parts: partInstances.map(part => ({ title: part.title || '(untitled)', moduleIdRef: part.moduleIdRef })),
+        parts: partInstances.map(part => ({
+          title: part.title || '(untitled)',
+          moduleIdRef: part.moduleIdRef,
+          connectors: partConnectors.get(part.moduleIdRef) ?? []
+        })),
         connections,
         floating,
         wireSegments: wireInstances.length
