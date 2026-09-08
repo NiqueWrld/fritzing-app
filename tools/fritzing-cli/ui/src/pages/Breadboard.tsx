@@ -1,9 +1,10 @@
-import { CameraIcon, CornersInIcon, FrameCornersIcon, LightningIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
+import { ArrowSquareOutIcon, CameraIcon, CornersInIcon, FrameCornersIcon, LightningIcon, MagnifyingGlassMinusIcon, MagnifyingGlassPlusIcon, WarningIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
 import { useTheme } from '../context/ThemeContext'
 import { fetchJson } from '../lib/api'
+import { autowireQueryParams, loadAutowireSettings } from '../lib/autowireSettings'
 
 async function fetchSvg(sketchPath: string): Promise<string> {
   const response = await fetch(`/api/sketch/svg?path=${encodeURIComponent(sketchPath)}&t=${Date.now()}`)
@@ -47,18 +48,25 @@ export default function Breadboard() {
   const liveBounds = useMemo(() => {
     if (!diagram) return undefined
     const drawableParts = diagram.parts.filter(part => !internalModules.has(part.moduleIdRef))
-    const xs = [...drawableParts.map(p => p.x), ...diagram.wires.flatMap(w => [w.x1, w.x2])]
-    const ys = [...drawableParts.map(p => p.y), ...diagram.wires.flatMap(w => [w.y1, w.y2])]
-    // Scene coordinates can be negative; shift the origin like adjustSceneRect does.
-    const margin = 40
-    const offsetX = Math.min(0, ...xs) - margin
-    const offsetY = Math.min(0, ...ys) - margin
+    const xs = [
+      ...drawableParts.flatMap(p => [p.x, p.x + (p.width ?? 200)]),
+      ...diagram.wires.flatMap(w => [w.x1, w.x2]),
+    ]
+    const ys = [
+      ...drawableParts.flatMap(p => [p.y, p.y + (p.height ?? 200)]),
+      ...diagram.wires.flatMap(w => [w.y1, w.y2]),
+    ]
+    if (xs.length === 0) return undefined
+    // Tight bounds around the actual content so no empty canvas is shown.
+    const margin = 30
+    const offsetX = Math.min(...xs) - margin
+    const offsetY = Math.min(...ys) - margin
     return {
       drawableParts,
       offsetX,
       offsetY,
-      width: Math.max(0, ...xs) - offsetX + 400,
-      height: Math.max(0, ...ys) - offsetY + 400,
+      width: Math.max(...xs) - offsetX + margin,
+      height: Math.max(...ys) - offsetY + margin,
     }
   }, [diagram, internalModules])
 
@@ -155,8 +163,9 @@ export default function Breadboard() {
   const autoWire = () => {
     if (!currentSketch) return
     setBusy(true)
+    const params = autowireQueryParams(loadAutowireSettings())
     fetchJson<{ wired: Array<{ from: string; to: string }> }>(
-      `/api/sketch/autowire?path=${encodeURIComponent(currentSketch)}`,
+      `/api/sketch/autowire?path=${encodeURIComponent(currentSketch)}&${params}`,
       { method: 'POST' }
     )
       .then(() => {
@@ -167,6 +176,13 @@ export default function Breadboard() {
         setError(requestError.message)
         setBusy(false)
       })
+  }
+
+  const openInFritzing = () => {
+    if (!currentSketch) return
+    fetchJson<{ launched: string }>(`/api/sketch/open?path=${encodeURIComponent(currentSketch)}`, { method: 'POST' })
+      .then(() => setError(undefined))
+      .catch((requestError: Error) => setError(requestError.message))
   }
 
   if (!currentSketch) {
@@ -247,6 +263,15 @@ export default function Breadboard() {
               Auto wire
             </button>
           )}
+          <button
+            type="button"
+            onClick={openInFritzing}
+            className={`flex items-center gap-2 rounded-lg border ${theme.secondary.border} px-3 py-2 text-sm transition ${theme.primary.hoverBorder}`}
+            title="Open this sketch in the Fritzing app"
+          >
+            <ArrowSquareOutIcon size={18} />
+            Open in Fritzing
+          </button>
           {mode === 'snapshot' && (
             <button
               type="button"

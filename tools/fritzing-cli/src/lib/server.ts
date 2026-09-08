@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
@@ -188,7 +189,16 @@ function svgElementCenter(svg: string, svgId: string): { x: number; y: number } 
 }
 
 // Locate a connector pin's center within the part's breadboard SVG, in scene units.
+const pinPositionCache = new Map<string, PinPosition | undefined>();
 async function findPinPosition(fzpPath: string, connectorId: string): Promise<PinPosition | undefined> {
+  const cacheKey = `${fzpPath}|${connectorId}`;
+  if (pinPositionCache.has(cacheKey)) return pinPositionCache.get(cacheKey);
+  const result = await findPinPositionUncached(fzpPath, connectorId);
+  pinPositionCache.set(cacheKey, result);
+  return result;
+}
+
+async function findPinPositionUncached(fzpPath: string, connectorId: string): Promise<PinPosition | undefined> {
   const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
   if (!fzp) return undefined;
   const connectorBlock = fzp.match(new RegExp(`<connector[^>]*id="${connectorId}"[\\s\\S]*?</connector>`, 'i'))?.[0];
@@ -284,39 +294,181 @@ function routeWire(options: {
   const { baseTitle, color, start, end, startTarget, endTarget } = options;
   const straight = Math.abs(start.x - end.x) < 2 || Math.abs(start.y - end.y) < 2;
   if (straight) {
-    return [buildWireSegment({
-      title: baseTitle,
-      color,
-      modelIndex: newWireModelIndex(),
-      start,
-      end,
-      startTarget,
-      endTarget
-    })];
+    return chainWire([start, end], baseTitle, color, startTarget, endTarget);
   }
-  const firstIndex = newWireModelIndex();
-  const secondIndex = newWireModelIndex();
-  const bend: PinPosition = { x: start.x, y: end.y };
-  return [
-    buildWireSegment({
-      title: `${baseTitle}_a`,
+  return chainWire([start, { x: start.x, y: end.y }, end], baseTitle, color, startTarget, endTarget);
+}
+
+// Build a polyline as chained wire segments joined by mutual wire-to-wire connects.
+function chainWire(points: PinPosition[], baseTitle: string, color: string, startTarget: WireEndTarget, endTarget: WireEndTarget): string[] {
+  if (points.length < 2) return [];
+  const ids = points.slice(1).map(() => newWireModelIndex());
+  const blocks: string[] = [];
+  for (let i = 1; i < points.length; i += 1) {
+    blocks.push(buildWireSegment({
+      title: points.length === 2 ? baseTitle : `${baseTitle}_${i}`,
       color,
-      modelIndex: firstIndex,
-      start,
-      end: bend,
-      startTarget,
-      endTarget: { kind: 'wire', modelIndex: secondIndex, connectorId: 'connector0' }
-    }),
-    buildWireSegment({
-      title: `${baseTitle}_b`,
-      color,
-      modelIndex: secondIndex,
-      start: bend,
-      end,
-      startTarget: { kind: 'wire', modelIndex: firstIndex, connectorId: 'connector1' },
-      endTarget
-    })
-  ];
+      modelIndex: ids[i - 1],
+      start: points[i - 1],
+      end: points[i],
+      startTarget: i === 1 ? startTarget : { kind: 'wire', modelIndex: ids[i - 2], connectorId: 'connector1' },
+      endTarget: i === points.length - 1 ? endTarget : { kind: 'wire', modelIndex: ids[i], connectorId: 'connector0' }
+    }));
+  }
+  return blocks;
+}
+
+type Rect = { x1: number; y1: number; x2: number; y2: number };
+
+// Grid A* with turn penalties; obstacle rects are parts, occupied cells are other wires.
+function findPath(start: PinPosition, end: PinPosition, obstacles: Rect[], occupied: Set<string>): PinPosition[] | undefined {
+  const G = 8;
+  const pad = 12 * G;
+  const rawMinX = Math.min(start.x, end.x, ...obstacles.map(o => o.x1)) - pad;
+  const rawMinY = Math.min(start.y, end.y, ...obstacles.map(o => o.y1)) - pad;
+  const maxX = Math.max(start.x, end.x, ...obstacles.map(o => o.x2)) + pad;
+  const maxY = Math.max(start.y, end.y, ...obstacles.map(o => o.y2)) + pad;
+  // Anchor the grid on the start pin so it lies exactly on a node.
+  const minX = start.x - Math.ceil((start.x - rawMinX) / G) * G;
+  const minY = start.y - Math.ceil((start.y - rawMinY) / G) * G;
+  const cols = Math.ceil((maxX - minX) / G) + 1;
+  const rows = Math.ceil((maxY - minY) / G) + 1;
+  if (cols < 2 || rows < 2 || cols * rows > 300000) return undefined;
+
+  const inflate = 4;
+  const blockedCache = new Map<number, boolean>();
+  const isBlocked = (cx: number, cy: number): boolean => {
+    const cacheKey = cy * cols + cx;
+    let value = blockedCache.get(cacheKey);
+    if (value === undefined) {
+      const px = minX + cx * G;
+      const py = minY + cy * G;
+      value = obstacles.some(o => px >= o.x1 - inflate && px <= o.x2 + inflate && py >= o.y1 - inflate && py <= o.y2 + inflate);
+      blockedCache.set(cacheKey, value);
+    }
+    return value;
+  };
+
+  const startCell = { cx: Math.round((start.x - minX) / G), cy: Math.round((start.y - minY) / G) };
+  const endCell = { cx: Math.min(cols - 1, Math.max(0, Math.round((end.x - minX) / G))), cy: Math.min(rows - 1, Math.max(0, Math.round((end.y - minY) / G))) };
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  type Node = { cx: number; cy: number; dir: number; cost: number; f: number };
+  const heap: Node[] = [];
+  const push = (node: Node) => {
+    heap.push(node);
+    let i = heap.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (heap[parent].f <= heap[i].f) break;
+      [heap[parent], heap[i]] = [heap[i], heap[parent]];
+      i = parent;
+    }
+  };
+  const pop = (): Node | undefined => {
+    if (heap.length === 0) return undefined;
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0 && last) {
+      heap[0] = last;
+      let i = 0;
+      for (;;) {
+        const left = 2 * i + 1;
+        const right = left + 1;
+        let smallest = i;
+        if (left < heap.length && heap[left].f < heap[smallest].f) smallest = left;
+        if (right < heap.length && heap[right].f < heap[smallest].f) smallest = right;
+        if (smallest === i) break;
+        [heap[smallest], heap[i]] = [heap[i], heap[smallest]];
+        i = smallest;
+      }
+    }
+    return top;
+  };
+
+  const heuristic = (cx: number, cy: number) => Math.abs(cx - endCell.cx) + Math.abs(cy - endCell.cy);
+  const best = new Map<string, number>();
+  const prev = new Map<string, string>();
+  const startKey = `${startCell.cx},${startCell.cy},-1`;
+  best.set(startKey, 0);
+  push({ cx: startCell.cx, cy: startCell.cy, dir: -1, cost: 0, f: heuristic(startCell.cx, startCell.cy) });
+  let goalKey: string | undefined;
+  let iterations = 0;
+
+  while (heap.length > 0 && iterations < 400000) {
+    iterations += 1;
+    const node = pop();
+    if (!node) break;
+    const nodeKey = `${node.cx},${node.cy},${node.dir}`;
+    if ((best.get(nodeKey) ?? Infinity) < node.cost) continue;
+    if (node.cx === endCell.cx && node.cy === endCell.cy) {
+      goalKey = nodeKey;
+      break;
+    }
+    for (let d = 0; d < 4; d += 1) {
+      const nx = node.cx + dirs[d][0];
+      const ny = node.cy + dirs[d][1];
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+      const isEndpoint = (nx === endCell.cx && ny === endCell.cy) || (nx === startCell.cx && ny === startCell.cy);
+      if (!isEndpoint && isBlocked(nx, ny)) continue;
+      const turn = node.dir !== -1 && node.dir !== d ? 4 : 0;
+      const busy = occupied.has(`${Math.round((minX + nx * G) / G)},${Math.round((minY + ny * G) / G)}`) ? 6 : 0;
+      const cost = node.cost + 1 + turn + busy;
+      const key = `${nx},${ny},${d}`;
+      if ((best.get(key) ?? Infinity) <= cost) continue;
+      best.set(key, cost);
+      prev.set(key, nodeKey);
+      push({ cx: nx, cy: ny, dir: d, cost, f: cost + heuristic(nx, ny) });
+    }
+  }
+  if (!goalKey) return undefined;
+
+  const cells: Array<{ cx: number; cy: number }> = [];
+  for (let key: string | undefined = goalKey; key; key = prev.get(key)) {
+    const [cx, cy] = key.split(',').map(Number);
+    if (cells.length === 0 || cells[0].cx !== cx || cells[0].cy !== cy) {
+      cells.unshift({ cx, cy });
+    }
+  }
+
+  const points: PinPosition[] = cells.map(cell => ({ x: minX + cell.cx * G, y: minY + cell.cy * G }));
+  // Merge collinear runs.
+  const simplified: PinPosition[] = [];
+  for (const point of points) {
+    const n = simplified.length;
+    if (n >= 2) {
+      const a = simplified[n - 2];
+      const b = simplified[n - 1];
+      if ((a.x === b.x && b.x === point.x) || (a.y === b.y && b.y === point.y)) {
+        simplified[n - 1] = point;
+        continue;
+      }
+    }
+    simplified.push(point);
+  }
+  // Snap endpoints to the exact pins, keeping segments orthogonal.
+  simplified[0] = start;
+  const last = simplified.length - 1;
+  if (last >= 1) {
+    if (simplified[last].x === simplified[last - 1].x) simplified[last - 1] = { ...simplified[last - 1], x: end.x };
+    else simplified[last - 1] = { ...simplified[last - 1], y: end.y };
+  }
+  simplified[last] = end;
+  if (last >= 1) {
+    if (Math.abs(simplified[1].x - start.x) < Math.abs(simplified[1].y - start.y)) simplified[1] = { ...simplified[1], x: start.x };
+  }
+  return simplified;
+}
+
+function markOccupied(points: PinPosition[], occupied: Set<string>): void {
+  const G = 8;
+  for (let i = 1; i < points.length; i += 1) {
+    const steps = Math.max(1, Math.round(Math.max(Math.abs(points[i].x - points[i - 1].x), Math.abs(points[i].y - points[i - 1].y)) / G));
+    for (let s = 0; s <= steps; s += 1) {
+      const px = points[i - 1].x + ((points[i].x - points[i - 1].x) * s) / steps;
+      const py = points[i - 1].y + ((points[i].y - points[i - 1].y) * s) / steps;
+      occupied.add(`${Math.round(px / G)},${Math.round(py / G)}`);
+    }
+  }
 }
 
 // Instance <transform> uses Qt row-vector convention: x' = m11*x + m21*y + m31.
@@ -489,11 +641,145 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendJson(res, 200, { instances: await listRunningFritzingInstances() });
       return;
     }
+    case 'GET /api/sketch/connections': {
+      const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      const xml = await readSketchModel(sketchPath);
+      type Inst = { moduleIdRef: string; modelIndex: string; title: string; body: string };
+      const all: Inst[] = [...xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)].map(match => ({
+        moduleIdRef: (match[1] ?? '').match(/moduleIdRef="([^"]+)"/i)?.[1] ?? '',
+        modelIndex: (match[1] ?? '').match(/modelIndex="([^"]+)"/i)?.[1] ?? '',
+        title: ((match[2] ?? '').match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim(),
+        body: match[2] ?? ''
+      }));
+      const byIndex = new Map(all.map(inst => [inst.modelIndex, inst]));
+      const wireInstances = all.filter(inst => inst.moduleIdRef === 'WireModuleID');
+      const partInstances = all.filter(inst => inst.moduleIdRef !== 'WireModuleID');
+
+      // Resolve connector ids to human names from the part definitions.
+      const nameCache = new Map<string, Map<string, string>>();
+      const connectorName = async (inst: Inst, connectorId: string): Promise<string> => {
+        let names = nameCache.get(inst.moduleIdRef);
+        if (!names) {
+          names = new Map();
+          const fzpPath = await findFzpByModuleId(inst.moduleIdRef);
+          const definition = fzpPath ? await readFile(fzpPath, 'utf8').catch(() => '') : '';
+          for (const match of definition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)) {
+            names.set(match[1], match[2]);
+          }
+          nameCache.set(inst.moduleIdRef, names);
+        }
+        const name = names.get(connectorId);
+        return name && name !== connectorId ? `${name} (${connectorId})` : connectorId;
+      };
+
+      type WireInfo = { index: number; color: string; connects: Array<{ modelIndex: string; connectorId: string; isWire: boolean }> };
+      const wireInfos: WireInfo[] = wireInstances.map((wire, index) => {
+        const bb = wire.body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1] ?? '';
+        return {
+          index,
+          color: bb.match(/color="([^"]+)"/i)?.[1] ?? '#404040',
+          connects: [...bb.matchAll(/<connect\b[^>]*connectorId="([^"]+)"[^>]*modelIndex="([^"]+)"/gi)].map(c => ({
+            connectorId: c[1],
+            modelIndex: c[2],
+            isWire: byIndex.get(c[2])?.moduleIdRef === 'WireModuleID'
+          }))
+        };
+      });
+
+      // Group chained wire segments into logical part-to-part connections.
+      const indexByModel = new Map(wireInstances.map((wire, index) => [wire.modelIndex, index]));
+      const visited = new Set<number>();
+      const connections: Array<{ from: string; to: string; color: string; segments: number }> = [];
+      const floating: string[] = [];
+      for (const info of wireInfos) {
+        if (visited.has(info.index)) continue;
+        const queue = [info.index];
+        const component: WireInfo[] = [];
+        visited.add(info.index);
+        while (queue.length > 0) {
+          const current = wireInfos[queue.pop() as number];
+          component.push(current);
+          for (const connect of current.connects) {
+            if (!connect.isWire) continue;
+            const neighbor = indexByModel.get(connect.modelIndex);
+            if (neighbor !== undefined && !visited.has(neighbor)) {
+              visited.add(neighbor);
+              queue.push(neighbor);
+            }
+          }
+        }
+        const endpoints: string[] = [];
+        for (const segment of component) {
+          for (const connect of segment.connects) {
+            if (connect.isWire) continue;
+            const target = byIndex.get(connect.modelIndex);
+            if (!target) continue;
+            endpoints.push(`${target.title || target.moduleIdRef}: ${await connectorName(target, connect.connectorId)}`);
+          }
+        }
+        if (endpoints.length >= 2) {
+          connections.push({ from: endpoints[0], to: endpoints[1], color: component[0].color, segments: component.length });
+        } else {
+          floating.push(`${wireInstances[component[0].index].title || 'Wire'} (${component.length} segment${component.length === 1 ? '' : 's'})`);
+        }
+      }
+
+      sendJson(res, 200, {
+        parts: partInstances.map(part => ({ title: part.title || '(untitled)', moduleIdRef: part.moduleIdRef })),
+        connections,
+        floating,
+        wireSegments: wireInstances.length
+      });
+      return;
+    }
+    case 'POST /api/sketch/open': {
+      const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
+      const executable = process.env.FRITZING_LAUNCH_EXECUTABLE
+        ?? resolveWorkspacePath('build/debug32/Fritzing.exe');
+      const executableExists = await readFile(executable).then(() => true).catch(() => false);
+      if (!executableExists) {
+        throw new HttpError(404, `Fritzing executable not found: ${executable}`);
+      }
+      // The debug build is not single-instance: activate an existing window instead of stacking copies.
+      const running = await listRunningFritzingInstances().catch(() => []);
+      const existing = running.find(instance => instance.executablePath.toLowerCase() === executable.toLowerCase());
+      if (existing) {
+        const script = `(New-Object -ComObject WScript.Shell).AppActivate(${existing.processId})`;
+        await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], process.cwd()).catch(() => undefined);
+        sendJson(res, 200, { launched: executable, sketch: sketchPath, alreadyRunning: true, processId: existing.processId });
+        return;
+      }
+      const child = spawn(executable, ['-f', resolveWorkspacePath('resources'), sketchPath], {
+        cwd: dirname(sketchPath),
+        detached: true,
+        stdio: 'ignore'
+      });
+      child.unref();
+      sendJson(res, 200, { launched: executable, sketch: sketchPath, alreadyRunning: false });
+      return;
+    }
     case 'POST /api/sketch/autowire': {
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       // Start from a clean slate: remove every existing wire, then wire everything fresh.
       const xml = (await readSketchModel(sketchPath))
         .replace(/\s*<instance\b[^>]*moduleIdRef="WireModuleID"[^>]*>[\s\S]*?<\/instance>/gi, '');
+
+      const boolParam = (name: string, fallback: boolean): boolean => {
+        const value = url.searchParams.get(name);
+        return value === null ? fallback : value !== '0' && value.toLowerCase() !== 'false';
+      };
+      const numParam = (name: string, fallback: number): number => {
+        const value = Number(url.searchParams.get(name));
+        return Number.isFinite(value) && value > 0 ? value : fallback;
+      };
+      const settings = {
+        placeParts: boolParam('place', true),
+        resetRotations: boolParam('resetRotation', true),
+        railJumpers: boolParam('jumpers', true),
+        wireSignals: boolParam('signals', true),
+        boardGap: numParam('gap', 60),
+        partSpacing: numParam('spacing', 45)
+      };
 
       type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number; transform: Mat };
       const instances: InstanceInfo[] = [];
@@ -525,7 +811,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         [...breadboardDefinition.matchAll(/id="pin(\d+)W"/g)].map(match => Number(match[1]))
       )].sort((a, b) => a - b);
       if (railColumns.length === 0) throw new HttpError(500, 'The breadboard has no power rail connectors.');
-      let railSlot = 0;
+      // Rail columns are picked by proximity: each part connects to the nearest free column.
+      const railColumnX = new Map<number, number>();
+      for (const column of railColumns) {
+        const pin = await findPinPosition(breadboardFzp, `pin${column}W`);
+        if (pin) railColumnX.set(column, breadboard.x + applyMat(breadboard.transform, pin).x);
+      }
+      const usedRailColumns = new Set<number>();
+      // The last two columns are reserved for the rail-pair jumpers.
+      const reservedLast = railColumns.at(-1);
+      const reservedSecondLast = railColumns.at(-2);
+      if (reservedLast !== undefined) usedRailColumns.add(reservedLast);
+      if (reservedSecondLast !== undefined) usedRailColumns.add(reservedSecondLast);
+      const nearestRailColumn = (sceneX: number): number => {
+        let bestColumn = railColumns[0];
+        let bestDistance = Infinity;
+        for (const column of railColumns) {
+          if (usedRailColumns.has(column)) continue;
+          const x = railColumnX.get(column);
+          if (x === undefined) continue;
+          const distance = Math.abs(x - sceneX);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestColumn = column;
+          }
+        }
+        usedRailColumns.add(bestColumn);
+        return bestColumn;
+      };
 
       // Wire the supply (microcontroller) first so it lands on the first rail connectors.
       const parts = [...instances].sort((a, b) =>
@@ -554,6 +867,154 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const signalColors = ['#ffe500', '#33cc00', '#3366ff', '#ff9900', '#9900cc', '#00cccc'];
       let signalCount = 0;
 
+      // Placement: anchor the breadboard, put the MCU below it and sensors in a row
+      // above it so wire paths stay short and never need to cross the board.
+      let workingXml = xml;
+      const localBox = async (part: InstanceInfo): Promise<{ minX: number; minY: number; width: number; height: number } | undefined> => {
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        if (!fzpPath) return undefined;
+        const svg = await readPartImageSvg(fzpPath);
+        const size = svg ? svgSizeToScene(svg) : undefined;
+        if (!size) return undefined;
+        const corners = [
+          applyMat(part.transform, { x: 0, y: 0 }),
+          applyMat(part.transform, { x: size.width, y: 0 }),
+          applyMat(part.transform, { x: 0, y: size.height }),
+          applyMat(part.transform, { x: size.width, y: size.height })
+        ];
+        const minX = Math.min(...corners.map(corner => corner.x));
+        const minY = Math.min(...corners.map(corner => corner.y));
+        return {
+          minX,
+          minY,
+          width: Math.max(...corners.map(corner => corner.x)) - minX,
+          height: Math.max(...corners.map(corner => corner.y)) - minY
+        };
+      };
+      const moveTo = (part: InstanceInfo, box: { minX: number; minY: number }, targetX: number, targetY: number) => {
+        part.x = targetX - box.minX;
+        part.y = targetY - box.minY;
+        workingXml = workingXml.replace(
+          new RegExp(`(<instance\\b[^>]*modelIndex="${part.modelIndex}"[^>]*>[\\s\\S]*?<breadboardView[^>]*>[\\s\\S]*?<geometry\\b[^>]*?)\\bx="[^"]*"([^>]*?)\\by="[^"]*"`, 'i'),
+          `$1x="${part.x}"$2y="${part.y}"`
+        );
+      };
+      // Rotated parts have pins facing away from the board; restore natural orientation.
+      const resetRotation = (part: InstanceInfo) => {
+        if (part.transform === identityMat) return;
+        part.transform = identityMat;
+        workingXml = workingXml.replace(
+          new RegExp(`(<instance\\b[^>]*modelIndex="${part.modelIndex}"[^>]*>[\\s\\S]*?<breadboardView[^>]*>[\\s\\S]*?)<transform\\b[^>]*\\/>\\s*`, 'i'),
+          '$1'
+        );
+      };
+      let boardCenterY: number | undefined;
+      const breadboardLocal = await localBox(breadboard);
+      if (breadboardLocal) {
+        const boardX1 = breadboard.x + breadboardLocal.minX;
+        const boardY1 = breadboard.y + breadboardLocal.minY;
+        const boardX2 = boardX1 + breadboardLocal.width;
+        const boardY2 = boardY1 + breadboardLocal.height;
+        boardCenterY = (boardY1 + boardY2) / 2;
+        void boardX2;
+        const gap = settings.boardGap;
+        if (settings.placeParts) {
+          if (mcu) {
+            if (settings.resetRotations) resetRotation(mcu);
+            const box = await localBox(mcu);
+            if (box) moveTo(mcu, box, boardX1, boardY2 + gap);
+          }
+          // Uniform layout: identical center-to-center pitch (widest part + spacing) and
+          // identical bottom-edge distance above the board for every sensor.
+          const sensorEntries: Array<{ part: InstanceInfo; box: { minX: number; minY: number; width: number; height: number } }> = [];
+          for (const part of parts) {
+            if (part === breadboard || part === mcu) continue;
+            if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
+            if (settings.resetRotations) resetRotation(part);
+            const box = await localBox(part);
+            if (box) sensorEntries.push({ part, box });
+          }
+          const pitch = Math.max(0, ...sensorEntries.map(entry => entry.box.width)) + settings.partSpacing;
+          sensorEntries.forEach(({ part, box }, index) => {
+            const centerX = boardX1 + pitch / 2 + index * pitch;
+            moveTo(part, box, centerX - box.width / 2, boardY1 - gap - box.height);
+          });
+        }
+      }
+
+      // Part bounding boxes are routing obstacles (breadboard, PCB, and notes excluded).
+      const partBoxes = new Map<string, Rect>();
+      for (const part of parts) {
+        if (part === breadboard || skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
+        const fzpPath = await findFzpByModuleId(part.moduleIdRef);
+        if (!fzpPath) continue;
+        const svg = await readPartImageSvg(fzpPath);
+        const size = svg ? svgSizeToScene(svg) : undefined;
+        if (!size) continue;
+        const corners = [
+          applyMat(part.transform, { x: 0, y: 0 }),
+          applyMat(part.transform, { x: size.width, y: 0 }),
+          applyMat(part.transform, { x: 0, y: size.height }),
+          applyMat(part.transform, { x: size.width, y: size.height })
+        ];
+        partBoxes.set(part.modelIndex, {
+          x1: part.x + Math.min(...corners.map(corner => corner.x)),
+          y1: part.y + Math.min(...corners.map(corner => corner.y)),
+          x2: part.x + Math.max(...corners.map(corner => corner.x)),
+          y2: part.y + Math.max(...corners.map(corner => corner.y))
+        });
+      }
+      const occupied = new Set<string>();
+      // The breadboard is an obstacle too, except for wires that terminate on it.
+      const breadboardSvg = await readPartImageSvg(breadboardFzp);
+      const breadboardSize = breadboardSvg ? svgSizeToScene(breadboardSvg) : undefined;
+      if (breadboardSize) {
+        const corners = [
+          applyMat(breadboard.transform, { x: 0, y: 0 }),
+          applyMat(breadboard.transform, { x: breadboardSize.width, y: 0 }),
+          applyMat(breadboard.transform, { x: 0, y: breadboardSize.height }),
+          applyMat(breadboard.transform, { x: breadboardSize.width, y: breadboardSize.height })
+        ];
+        partBoxes.set(breadboard.modelIndex, {
+          x1: breadboard.x + Math.min(...corners.map(corner => corner.x)),
+          y1: breadboard.y + Math.min(...corners.map(corner => corner.y)),
+          x2: breadboard.x + Math.max(...corners.map(corner => corner.x)),
+          y2: breadboard.y + Math.max(...corners.map(corner => corner.y))
+        });
+      }
+      const routeSmart = (options: {
+        baseTitle: string;
+        color: string;
+        start: PinPosition;
+        end: PinPosition;
+        startTarget: WireEndTarget;
+        endTarget: WireEndTarget;
+        exclude: string[];
+      }): string[] => {
+        const obstacles = [...partBoxes.entries()]
+          .filter(([modelIndex]) => !options.exclude.includes(modelIndex))
+          .map(([, rect]) => rect);
+        // Leave the pin with a straight vertical stub before any bend is allowed.
+        const stubLength = 16;
+        const verticalGap = options.end.y - options.start.y;
+        const stub = Math.abs(verticalGap) > stubLength * 2 ? Math.sign(verticalGap) * stubLength : 0;
+        const routeStart = stub ? { x: options.start.x, y: options.start.y + stub } : options.start;
+        const points = findPath(routeStart, options.end, obstacles, occupied);
+        if (points) {
+          let full = stub ? [options.start, ...points] : points;
+          // Merge collinear runs introduced by the stub.
+          full = full.filter((point, index) => {
+            if (index === 0 || index === full.length - 1) return true;
+            const previous = full[index - 1];
+            const next = full[index + 1];
+            return !((previous.x === point.x && point.x === next.x) || (previous.y === point.y && point.y === next.y));
+          });
+          markOccupied(full, occupied);
+          return chainWire(full, options.baseTitle, options.color, options.startTarget, options.endTarget);
+        }
+        return routeWire(options);
+      };
+
       for (const part of parts) {
         if (part === breadboard) continue;
         if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
@@ -562,57 +1023,106 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const definition = await readFile(fzpPath, 'utf8').catch(() => '');
         const connectors = [...definition.matchAll(/<connector[^>]*id="([^"]+)"[^>]*name="([^"]+)"/gi)]
           .map(match => ({ id: match[1], name: match[2] }));
-        // Prefer 5V over generic supply names over VIN; last match wins within a tier (power headers are declared last).
+        // Prefer 5V over generic supply names over VIN; candidates within the best tier
+        // are narrowed to the pin physically closest to the rail.
         const powerTiers = [/^(5v|\+5v)$/i, /^(vcc|vdd|vs|v|v\+|\+|pwr|power|3v3|3\.3v)$/i, /^vin$/i];
-        const powerId = powerTiers
-          .map(tier => connectors.filter(connector => tier.test(connector.name)).at(-1)?.id)
-          .find(id => id !== undefined);
-        const groundId = connectors.filter(connector => groundName.test(connector.name)).at(-1)?.id;
-        if (!powerId && !groundId && part !== mcu && mcuConnectors.length === 0) continue;
+        // Pins inside an ICSP header group are programming pins, not supply cables.
+        const isIcspNeighbor = (index: number): boolean => connectors
+          .slice(Math.max(0, index - 3), index + 4)
+          .some(connector => /icsp/i.test(connector.name));
+        const withoutIcsp = (candidates: Array<{ id: string; name: string }>): Array<{ id: string; name: string }> => {
+          const filtered = candidates.filter(candidate => !isIcspNeighbor(connectors.findIndex(c => c.id === candidate.id)));
+          return filtered.length > 0 ? filtered : candidates;
+        };
+        const powerCandidates = withoutIcsp(powerTiers
+          .map(tier => connectors.filter(connector => tier.test(connector.name)))
+          .find(candidates => candidates.length > 0) ?? []);
+        const groundCandidates = withoutIcsp(connectors.filter(connector => groundName.test(connector.name)));
+        if (powerCandidates.length === 0 && groundCandidates.length === 0 && part !== mcu && mcuConnectors.length === 0) continue;
 
-        const railColumn = railColumns[Math.min(railSlot, railColumns.length - 1)];
-        const railPlus = `pin${railColumn}W`;
-        const railMinus = `pin${railColumn}X`;
-        const [powerPin, groundPin, railPlusPin, railMinusPin] = await Promise.all([
-          powerId ? findPinPosition(fzpPath, powerId) : undefined,
-          groundId ? findPinPosition(fzpPath, groundId) : undefined,
-          findPinPosition(breadboardFzp, railPlus),
-          findPinPosition(breadboardFzp, railMinus)
-        ]);
         const label = part.title || part.moduleIdRef;
         const scenePoint = (owner: InstanceInfo, pin: PinPosition) => {
           const mapped = applyMat(owner.transform, pin);
           return { x: owner.x + mapped.x, y: owner.y + mapped.y };
         };
 
+        type PinChoice = { id: string; pin: PinPosition };
+        const resolvePins = async (candidates: Array<{ id: string }>): Promise<PinChoice[]> => {
+          const resolved = await Promise.all(candidates.map(async candidate => ({
+            id: candidate.id,
+            pin: await findPinPosition(fzpPath, candidate.id)
+          })));
+          return resolved.filter((entry): entry is PinChoice => entry.pin !== undefined);
+        };
+        const powerPins = await resolvePins(powerCandidates);
+        const groundPins = await resolvePins(groundCandidates);
+
+        // Pick the free rail column closest to the part's supply pins.
+        const anchorPin = powerPins[0]?.pin ?? groundPins[0]?.pin;
+        if (!anchorPin && powerCandidates.length === 0 && groundCandidates.length === 0) continue;
+        const railColumn = anchorPin
+          ? nearestRailColumn(scenePoint(part, anchorPin).x)
+          : railColumns[0];
+        // Parts above the board connect to the top rail pair (Y=+, Z=-); below uses W/X.
+        const partBox = partBoxes.get(part.modelIndex);
+        const topSide = boardCenterY !== undefined && partBox !== undefined && (partBox.y1 + partBox.y2) / 2 < boardCenterY;
+        const railPlus = topSide ? `pin${railColumn}Y` : `pin${railColumn}W`;
+        const railMinus = topSide ? `pin${railColumn}Z` : `pin${railColumn}X`;
+        const [railPlusPin, railMinusPin] = await Promise.all([
+          findPinPosition(breadboardFzp, railPlus),
+          findPinPosition(breadboardFzp, railMinus)
+        ]);
+
+        // Among equivalent pins (e.g. the Uno's several GNDs), use the one nearest the rail.
+        const closestTo = (choices: PinChoice[], target: PinPosition | undefined): PinChoice | undefined => {
+          if (!target) return choices[0];
+          const targetScene = scenePoint(breadboard, target);
+          let best: PinChoice | undefined;
+          let bestDistance = Infinity;
+          for (const choice of choices) {
+            const point = scenePoint(part, choice.pin);
+            const distance = Math.abs(point.x - targetScene.x) + Math.abs(point.y - targetScene.y);
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              best = choice;
+            }
+          }
+          return best;
+        };
+        const powerChoice = closestTo(powerPins, railPlusPin);
+        const groundChoice = closestTo(groundPins, railMinusPin);
+        const powerId = powerChoice?.id;
+        const powerPin = powerChoice?.pin;
+        const groundId = groundChoice?.id;
+        const groundPin = groundChoice?.pin;
+
         if (powerId && powerPin && railPlusPin) {
-          wireBlocks.push(...routeWire({
+          wireBlocks.push(...routeSmart({
             baseTitle: `AutoWire5V_${part.modelIndex}`,
             color: '#cc1414',
             start: scenePoint(part, powerPin),
             end: scenePoint(breadboard, railPlusPin),
             startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: powerId },
-            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railPlus }
+            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railPlus },
+            exclude: [part.modelIndex, breadboard.modelIndex]
           }));
           wired.push({ from: `${label} ${powerId} (power)`, to: `Breadboard ${railPlus} (+ rail)` });
         }
         if (groundId && groundPin && railMinusPin) {
-          wireBlocks.push(...routeWire({
+          wireBlocks.push(...routeSmart({
             baseTitle: `AutoWireGND_${part.modelIndex}`,
             color: '#404040',
             start: scenePoint(part, groundPin),
             end: scenePoint(breadboard, railMinusPin),
             startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: groundId },
-            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railMinus }
+            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railMinus },
+            exclude: [part.modelIndex, breadboard.modelIndex]
           }));
           wired.push({ from: `${label} ${groundId} (ground)`, to: `Breadboard ${railMinus} (- rail)` });
         }
-        if ((powerId && powerPin) || (groundId && groundPin)) {
-          railSlot += 1;
-        }
 
         // Remaining pins are signal lines: wire each to a free MCU pin (analog A*, else digital D2+).
-        if (part !== mcu && mcu && mcuFzp) {
+        if (part !== mcu && mcu && mcuFzp && settings.wireSignals) {
           const ncName = /^(nc|n\/c|not connected)$/i;
           const signalConnectors = connectors.filter(connector =>
             connector.id !== powerId && connector.id !== groundId &&
@@ -627,13 +1137,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
               findPinPosition(mcuFzp, mcuPin.id)
             ]);
             if (!signalPin || !mcuPinPosition) continue;
-            wireBlocks.push(...routeWire({
+            wireBlocks.push(...routeSmart({
               baseTitle: `AutoWireSig_${part.modelIndex}_${signal.id}`,
               color: signalColors[signalCount++ % signalColors.length],
               start: scenePoint(part, signalPin),
               end: scenePoint(mcu, mcuPinPosition),
               startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: signal.id },
-              endTarget: { kind: 'part', modelIndex: mcu.modelIndex, connectorId: mcuPin.id }
+              endTarget: { kind: 'part', modelIndex: mcu.modelIndex, connectorId: mcuPin.id },
+              exclude: [part.modelIndex, mcu.modelIndex]
             }));
             wired.push({ from: `${label} ${signal.name} (${signal.id})`, to: `${mcu.title || 'MCU'} ${mcuPin.name}` });
           }
@@ -644,7 +1155,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // last column, black on the second-to-last so the jumpers do not overlap.
       const plusColumn = railColumns.at(-1);
       const minusColumn = railColumns.at(-2) ?? plusColumn;
-      if (plusColumn !== undefined && minusColumn !== undefined) {
+      if (plusColumn !== undefined && minusColumn !== undefined && settings.railJumpers) {
         const jumpers: Array<{ fromPin: string; toPin: string; color: string; label: string }> = [
           { fromPin: `pin${plusColumn}W`, toPin: `pin${plusColumn}Y`, color: '#cc1414', label: '+ rails' },
           { fromPin: `pin${minusColumn}X`, toPin: `pin${minusColumn}Z`, color: '#404040', label: '- rails' }
@@ -673,7 +1184,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         throw new HttpError(404, 'No unwired parts with power/ground connectors were found.');
       }
 
-      const updated = xml.replace(/<\/instances>/i, `${wireBlocks.join('')}\n    </instances>`);
+      const updated = workingXml.replace(/<\/instances>/i, `${wireBlocks.join('')}\n    </instances>`);
       if (updated === xml) throw new HttpError(500, 'Could not insert wires into the sketch.');
       await writeSketchModel(sketchPath, updated, true);
       sendJson(res, 200, { wired });

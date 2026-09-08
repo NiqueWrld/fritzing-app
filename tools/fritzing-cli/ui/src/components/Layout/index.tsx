@@ -18,7 +18,7 @@ function Layout() {
         />
       )}
       {/* Mobile sidebar */}
-      <div className={`fixed z-30 top-0 left-0 h-full transition-transform md:hidden ${theme.secondary.appBg} ${
+      <div className={`fixed z-30 top-0 left-0 h-full transition-transform md:hidden ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
         <Sidebar />
