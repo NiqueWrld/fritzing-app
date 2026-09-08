@@ -14,7 +14,17 @@ async function fetchSvg(sketchPath: string): Promise<string> {
   return response.text()
 }
 
-type DiagramPart = { moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number }
+type DiagramPart = {
+  moduleIdRef: string
+  title: string
+  x: number
+  y: number
+  z: number
+  width?: number
+  height?: number
+  // Qt row-vector matrix [m11 m12 m21 m22 dx dy]: x' = m11*x + m21*y + dx.
+  transform?: [number, number, number, number, number, number]
+}
 type DiagramWire = { x1: number; y1: number; x2: number; y2: number; color: string; width: number }
 type Diagram = { parts: DiagramPart[]; wires: DiagramWire[] }
 
@@ -274,19 +284,24 @@ export default function Breadboard() {
           const { drawableParts, width, height, offsetX, offsetY } = liveBounds
           return (
             <div data-canvas-content className="relative origin-top-left" style={{ transform: `scale(${zoom})`, width, height }}>
-              {drawableParts.map((part, index) => (
-                <img
-                  key={`${part.moduleIdRef}-${index}`}
-                  src={`/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`}
-                  alt={part.title}
-                  title={part.title}
-                  className="absolute origin-top-left"
-                  style={part.width && part.height
-                    ? { left: part.x - offsetX, top: part.y - offsetY, width: part.width, height: part.height }
-                    : { left: part.x - offsetX, top: part.y - offsetY, transform: `scale(${sceneScale})` }}
-                  onError={event => (event.currentTarget.style.display = 'none')}
-                />
-              ))}
+              {drawableParts.map((part, index) => {
+                // CSS matrix(a,b,c,d,e,f): a=m11 b=m12 c=m21 d=m22 — same convention as Qt.
+                const rotation = part.transform ? `matrix(${part.transform.join(',')})` : ''
+                const style = part.width && part.height
+                  ? { left: part.x - offsetX, top: part.y - offsetY, width: part.width, height: part.height, transform: rotation || undefined }
+                  : { left: part.x - offsetX, top: part.y - offsetY, transform: `${rotation} scale(${sceneScale})`.trim() }
+                return (
+                  <img
+                    key={`${part.moduleIdRef}-${index}`}
+                    src={`/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`}
+                    alt={part.title}
+                    title={part.title}
+                    className="absolute origin-top-left"
+                    style={style}
+                    onError={event => (event.currentTarget.style.display = 'none')}
+                  />
+                )
+              })}
               <svg className="pointer-events-none absolute left-0 top-0" width={width} height={height}>
                 {diagram.wires.map((wire, index) => (
                   <line

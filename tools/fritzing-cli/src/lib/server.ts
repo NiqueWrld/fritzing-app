@@ -98,6 +98,107 @@ async function readPartImageSvg(fzpPath: string): Promise<string | undefined> {
   return undefined;
 }
 
+// Column-major 2D matrix [a b c d e f]: x' = a*x + c*y + e, y' = b*x + d*y + f.
+type Mat = [number, number, number, number, number, number];
+const identityMat: Mat = [1, 0, 0, 1, 0, 0];
+
+function multiplyMat(outer: Mat, inner: Mat): Mat {
+  return [
+    outer[0] * inner[0] + outer[2] * inner[1],
+    outer[1] * inner[0] + outer[3] * inner[1],
+    outer[0] * inner[2] + outer[2] * inner[3],
+    outer[1] * inner[2] + outer[3] * inner[3],
+    outer[0] * inner[4] + outer[2] * inner[5] + outer[4],
+    outer[1] * inner[4] + outer[3] * inner[5] + outer[5]
+  ];
+}
+
+function parseTransform(value: string | undefined): Mat {
+  if (!value) return identityMat;
+  let matrix = identityMat;
+  for (const match of value.matchAll(/(matrix|translate|scale|rotate)\s*\(([^)]*)\)/gi)) {
+    const args = match[2].split(/[\s,]+/).filter(Boolean).map(Number);
+    const kind = match[1].toLowerCase();
+    let next: Mat = identityMat;
+    if (kind === 'matrix' && args.length === 6) next = [args[0], args[1], args[2], args[3], args[4], args[5]];
+    else if (kind === 'translate') next = [1, 0, 0, 1, args[0] ?? 0, args[1] ?? 0];
+    else if (kind === 'scale') next = [args[0] ?? 1, 0, 0, args[1] ?? args[0] ?? 1, 0, 0];
+    else if (kind === 'rotate') {
+      const radians = ((args[0] ?? 0) * Math.PI) / 180;
+      const cos = Math.cos(radians);
+      const sin = Math.sin(radians);
+      next = [cos, sin, -sin, cos, 0, 0];
+      if (args.length === 3) {
+        next = multiplyMat(multiplyMat([1, 0, 0, 1, args[1], args[2]], next), [1, 0, 0, 1, -args[1], -args[2]]);
+      }
+    }
+    matrix = multiplyMat(matrix, next);
+  }
+  return matrix;
+}
+
+function attrOf(tag: string, name: string): string | undefined {
+  return tag.match(new RegExp(`\\b${name}="([^"]*)"`, 'i'))?.[1];
+}
+
+function shapeCenter(tag: string): { x: number; y: number } | undefined {
+  const cx = attrOf(tag, 'cx');
+  const cy = attrOf(tag, 'cy');
+  if (cx !== undefined && cy !== undefined) return { x: Number(cx), y: Number(cy) };
+  const x = attrOf(tag, 'x');
+  const y = attrOf(tag, 'y');
+  if (x !== undefined && y !== undefined) {
+    return { x: Number(x) + Number(attrOf(tag, 'width') ?? 0) / 2, y: Number(y) + Number(attrOf(tag, 'height') ?? 0) / 2 };
+  }
+  return undefined;
+}
+
+// Resolve an element's center in root SVG user units, honoring ancestor and own transforms.
+function svgElementCenter(svg: string, svgId: string): { x: number; y: number } | undefined {
+  const stack: Mat[] = [];
+  const idPattern = new RegExp(`\\bid="${svgId}"`, 'i');
+  let insideTarget: Mat | undefined;
+  let targetDepth = 0;
+  for (const match of svg.matchAll(/<\/?[a-zA-Z][^>]*>/g)) {
+    const tag = match[0];
+    const isClose = tag.startsWith('</');
+    const isSelfClosed = tag.endsWith('/>');
+    if (isClose) {
+      if (insideTarget !== undefined) {
+        targetDepth -= 1;
+        if (targetDepth <= 0) insideTarget = undefined;
+      } else {
+        stack.pop();
+      }
+      continue;
+    }
+    const composed = multiplyMat(
+      insideTarget ?? stack.at(-1) ?? identityMat,
+      parseTransform(attrOf(tag, 'transform'))
+    );
+    const isTarget = idPattern.test(tag);
+    if (isTarget || insideTarget !== undefined) {
+      const center = shapeCenter(tag);
+      if (center) {
+        const [a, b, c, d, e, f] = composed;
+        return { x: a * center.x + c * center.y + e, y: b * center.x + d * center.y + f };
+      }
+      if (!isSelfClosed) {
+        if (isTarget && insideTarget === undefined) {
+          insideTarget = composed;
+          targetDepth = 1;
+        } else {
+          insideTarget = composed;
+          targetDepth += 1;
+        }
+      }
+      continue;
+    }
+    if (!isSelfClosed) stack.push(composed);
+  }
+  return undefined;
+}
+
 // Locate a connector pin's center within the part's breadboard SVG, in scene units.
 async function findPinPosition(fzpPath: string, connectorId: string): Promise<PinPosition | undefined> {
   const fzp = await readFile(fzpPath, 'utf8').catch(() => undefined);
@@ -108,71 +209,142 @@ async function findPinPosition(fzpPath: string, connectorId: string): Promise<Pi
   if (!svgId) return undefined;
   const svg = await readPartImageSvg(fzpPath);
   if (!svg) return undefined;
-  // The svgId may be on a shape or a <g> wrapping shapes; attributes may precede the id,
-  // so scan from the element's opening bracket.
-  const idIndex = svg.search(new RegExp(`\\bid="${svgId}"`, 'i'));
-  if (idIndex < 0) return undefined;
-  const elementStart = svg.lastIndexOf('<', idIndex);
-  const windowText = svg.slice(elementStart, idIndex + 800);
-  let x: number | undefined;
-  let y: number | undefined;
-  const circle = windowText.match(/\bcx="([\d.-]+)"[^>]*\bcy="([\d.-]+)"/i);
-  if (circle) {
-    x = Number(circle[1]);
-    y = Number(circle[2]);
-  } else {
-    const rect = windowText.match(/\bx="([\d.-]+)"[^>]*\by="([\d.-]+)"(?:[^>]*\bwidth="([\d.-]+)")?(?:[^>]*\bheight="([\d.-]+)")?/i);
-    if (rect) {
-      x = Number(rect[1]) + Number(rect[3] ?? 0) / 2;
-      y = Number(rect[2]) + Number(rect[4] ?? 0) / 2;
-    }
-  }
-  if (x === undefined || y === undefined || Number.isNaN(x) || Number.isNaN(y)) return undefined;
+  const center = svgElementCenter(svg, svgId);
+  if (!center || Number.isNaN(center.x) || Number.isNaN(center.y)) return undefined;
   // Map user units to scene units via the viewBox against the Fritzing-converted size.
   const viewBox = svg.match(/viewBox="([^"]+)"/i)?.[1]?.split(/\s+/).map(Number);
   const sceneSize = svgSizeToScene(svg);
   if (viewBox && sceneSize && viewBox[2] > 0) {
     const scale = sceneSize.width / viewBox[2];
-    return { x: x * scale, y: y * scale };
+    return { x: (center.x - viewBox[0]) * scale, y: (center.y - viewBox[1]) * scale };
   }
-  return { x, y };
+  return center;
 }
 
-function buildWireInstance(options: {
+type WireEndTarget = { kind: 'part' | 'breadboardPin' | 'wire'; modelIndex: string; connectorId: string };
+
+// Connect layer names per view for each kind of target (matches Fritzing-saved files).
+const targetLayers: Record<WireEndTarget['kind'], { bb: string; pcb: string; sch: string }> = {
+  part: { bb: 'breadboardbreadboard', pcb: 'copper1', sch: 'schematic' },
+  breadboardPin: { bb: 'breadboardbreadboard', pcb: 'breadboardbreadboard', sch: 'breadboardbreadboard' },
+  wire: { bb: 'breadboardWire', pcb: 'copper1trace', sch: 'schematicTrace' }
+};
+
+function newWireModelIndex(): string {
+  return String(Math.floor(Math.random() * 900000) + 100000);
+}
+
+function buildWireSegment(options: {
   title: string;
   color: string;
-  from: { modelIndex: string; x: number; y: number };
-  to: { modelIndex: string; connectorId: string };
-  fromConnect: { connectorId: string };
-  toPoint: { x: number; y: number };
+  modelIndex: string;
+  start: PinPosition;
+  end: PinPosition;
+  startTarget: WireEndTarget;
+  endTarget: WireEndTarget;
 }): string {
-  const { title, color, from, to, fromConnect, toPoint } = options;
-  const dx = toPoint.x - from.x;
-  const dy = toPoint.y - from.y;
+  const { title, color, modelIndex, start, end, startTarget, endTarget } = options;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  // Fritzing saves the same logical wire in all three views; a single-view wire
+  // triggers "Routing error: connector mismatch between views" (debugconnectors.cpp).
+  const connectorsBlock = (wireLayer: string, view: 'bb' | 'pcb' | 'sch') => `
+                    <connectors>
+                        <connector connectorId="connector0" layer="${wireLayer}">
+                            <geometry x="0" y="0"/>
+                            <connects>
+                                <connect connectorId="${startTarget.connectorId}" modelIndex="${startTarget.modelIndex}" layer="${targetLayers[startTarget.kind][view]}"/>
+                            </connects>
+                        </connector>
+                        <connector connectorId="connector1" layer="${wireLayer}">
+                            <geometry x="0" y="0"/>
+                            <connects>
+                                <connect connectorId="${endTarget.connectorId}" modelIndex="${endTarget.modelIndex}" layer="${targetLayers[endTarget.kind][view]}"/>
+                            </connects>
+                        </connector>
+                    </connectors>`;
   return `
-        <instance moduleIdRef="WireModuleID" modelIndex="${Math.floor(Math.random() * 900000) + 100000}" path=":/resources/parts/core/wire.fzp">
+        <instance moduleIdRef="WireModuleID" modelIndex="${modelIndex}" path=":/resources/parts/core/wire.fzp">
             <title>${title}</title>
             <views>
                 <breadboardView layer="breadboardWire">
-                    <geometry z="3.5" x="${from.x}" y="${from.y}" x1="0" y1="0" x2="${dx}" y2="${dy}" wireFlags="64"/>
-                    <wireExtras mils="22.2222" color="${color}" opacity="1" banded="0"/>
-                    <connectors>
-                        <connector connectorId="connector0" layer="breadboardWire">
-                            <geometry x="0" y="0"/>
-                            <connects>
-                                <connect connectorId="${fromConnect.connectorId}" modelIndex="${from.modelIndex}" layer="breadboardbreadboard"/>
-                            </connects>
-                        </connector>
-                        <connector connectorId="connector1" layer="breadboardWire">
-                            <geometry x="0" y="0"/>
-                            <connects>
-                                <connect connectorId="${to.connectorId}" modelIndex="${to.modelIndex}" layer="breadboardbreadboard"/>
-                            </connects>
-                        </connector>
-                    </connectors>
+                    <geometry z="3.5" x="${start.x}" y="${start.y}" x1="0" y1="0" x2="${dx}" y2="${dy}" wireFlags="64"/>
+                    <wireExtras mils="22.2222" color="${color}" opacity="1" banded="0"/>${connectorsBlock('breadboardWire', 'bb')}
                 </breadboardView>
+                <pcbView layer="copper1trace">
+                    <geometry z="9.5" x="${start.x}" y="${start.y}" x1="0" y1="0" x2="${dx}" y2="${dy}" wireFlags="64"/>
+                    <wireExtras mils="11.1111" color="#f28a00" opacity="1" banded="0"/>${connectorsBlock('copper1trace', 'pcb')}
+                </pcbView>
+                <schematicView layer="schematicTrace">
+                    <geometry z="5.5" x="${start.x}" y="${start.y}" x1="0" y1="0" x2="${dx}" y2="${dy}" wireFlags="64"/>
+                    <wireExtras mils="33.3333" color="#404040" opacity="1" banded="0"/>${connectorsBlock('schematicTrace', 'sch')}
+                </schematicView>
             </views>
         </instance>`;
+}
+
+// Manhattan routing: vertical run from the pin to the rail row, a bendpoint, then a
+// horizontal run along the rail. Bendpoints are chained wire segments, as Fritzing saves them.
+function routeWire(options: {
+  baseTitle: string;
+  color: string;
+  start: PinPosition;
+  end: PinPosition;
+  startTarget: WireEndTarget;
+  endTarget: WireEndTarget;
+}): string[] {
+  const { baseTitle, color, start, end, startTarget, endTarget } = options;
+  const straight = Math.abs(start.x - end.x) < 2 || Math.abs(start.y - end.y) < 2;
+  if (straight) {
+    return [buildWireSegment({
+      title: baseTitle,
+      color,
+      modelIndex: newWireModelIndex(),
+      start,
+      end,
+      startTarget,
+      endTarget
+    })];
+  }
+  const firstIndex = newWireModelIndex();
+  const secondIndex = newWireModelIndex();
+  const bend: PinPosition = { x: start.x, y: end.y };
+  return [
+    buildWireSegment({
+      title: `${baseTitle}_a`,
+      color,
+      modelIndex: firstIndex,
+      start,
+      end: bend,
+      startTarget,
+      endTarget: { kind: 'wire', modelIndex: secondIndex, connectorId: 'connector0' }
+    }),
+    buildWireSegment({
+      title: `${baseTitle}_b`,
+      color,
+      modelIndex: secondIndex,
+      start: bend,
+      end,
+      startTarget: { kind: 'wire', modelIndex: firstIndex, connectorId: 'connector1' },
+      endTarget
+    })
+  ];
+}
+
+// Instance <transform> uses Qt row-vector convention: x' = m11*x + m21*y + m31.
+function parseInstanceTransform(viewXml: string): Mat {
+  const attrs = viewXml.match(/<transform\b([^>]*)\/?>/i)?.[1];
+  if (!attrs) return identityMat;
+  const num = (name: string, fallback: number) => {
+    const value = attrs.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1];
+    return value === undefined ? fallback : Number(value);
+  };
+  return [num('m11', 1), num('m12', 0), num('m21', 0), num('m22', 1), num('m31', 0), num('m32', 0)];
+}
+
+function applyMat(matrix: Mat, point: PinPosition): PinPosition {
+  const [a, b, c, d, e, f] = matrix;
+  return { x: a * point.x + c * point.y + e, y: b * point.x + d * point.y + f };
 }
 
 function requireParam(url: URL, name: string): string {
@@ -222,7 +394,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // breadboardView <geometry x y z>; wires run from (x+x1,y+y1) to (x+x2,y+y2).
       const sketchPath = resolveWorkspacePath(requireParam(url, 'path'));
       const xml = await readSketchModel(sketchPath);
-      const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number }> = [];
+      const parts: Array<{ moduleIdRef: string; title: string; x: number; y: number; z: number; width?: number; height?: number; transform?: Mat }> = [];
       const wires: Array<{ x1: number; y1: number; x2: number; y2: number; color: string; width: number }> = [];
       for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
         const attrs = match[1] ?? '';
@@ -241,7 +413,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           const width = Number(view.match(/<wireExtras[^>]*\bwidth="([^"]+)"/i)?.[1] ?? '3');
           wires.push({ x1: x + num('x1'), y1: y + num('y1'), x2: x + num('x2'), y2: y + num('y2'), color, width });
         } else {
-          parts.push({ moduleIdRef, title, x, y, z: num('z') });
+          const transform = parseInstanceTransform(view);
+          parts.push({ moduleIdRef, title, x, y, z: num('z'), transform: transform === identityMat ? undefined : transform });
         }
       }
       parts.sort((a, b) => a.z - b.z);
@@ -331,7 +504,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const xml = (await readSketchModel(sketchPath))
         .replace(/\s*<instance\b[^>]*moduleIdRef="WireModuleID"[^>]*>[\s\S]*?<\/instance>/gi, '');
 
-      type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number };
+      type InstanceInfo = { moduleIdRef: string; modelIndex: string; title: string; x: number; y: number; transform: Mat };
       const instances: InstanceInfo[] = [];
       for (const match of xml.matchAll(/<instance\b([^>]*)>([\s\S]*?)<\/instance>/gi)) {
         const attrs = match[1] ?? '';
@@ -339,10 +512,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const moduleIdRef = attrs.match(/\bmoduleIdRef="([^"]+)"/i)?.[1] ?? '';
         const modelIndex = attrs.match(/\bmodelIndex="([^"]+)"/i)?.[1] ?? '';
         const title = (body.match(/<title>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim();
-        const geometry = body.match(/<breadboardView[^>]*>[\s\S]*?<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
+        const view = body.match(/<breadboardView[^>]*>([\s\S]*?)<\/breadboardView>/i)?.[1] ?? '';
+        const geometry = view.match(/<geometry\b([^>]*)\/?>/i)?.[1] ?? '';
         const x = Number(geometry.match(/\bx="([^"]+)"/i)?.[1] ?? '0');
         const y = Number(geometry.match(/\by="([^"]+)"/i)?.[1] ?? '0');
-        instances.push({ moduleIdRef, modelIndex, title, x, y });
+        instances.push({ moduleIdRef, modelIndex, title, x, y, transform: parseInstanceTransform(view) });
       }
 
       const skipModules = /^(WireModuleID|NoteModuleID|RulerModuleID|LogoImageModuleID|TwoLayerRectanglePCBModuleID)$/i;
@@ -354,10 +528,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const groundName = /^(gnd|ground|-|0v|vss)$/i;
       const wired: Array<{ from: string; to: string }> = [];
       const wireBlocks: string[] = [];
-      // Each part gets its own rail column so wires do not stack.
-      let railColumn = 5;
+      // Use the rail pins that actually exist, in order, starting from the first one.
+      const breadboardDefinition = await readFile(breadboardFzp, 'utf8').catch(() => '');
+      const railColumns = [...new Set(
+        [...breadboardDefinition.matchAll(/id="pin(\d+)W"/g)].map(match => Number(match[1]))
+      )].sort((a, b) => a - b);
+      if (railColumns.length === 0) throw new HttpError(500, 'The breadboard has no power rail connectors.');
+      let railSlot = 0;
 
-      for (const part of instances) {
+      // Wire the supply (microcontroller) first so it lands on the first rail connectors.
+      const parts = [...instances].sort((a, b) =>
+        Number(/arduino|uno|mega|nano|esp|micro:bit|raspberry/i.test(b.moduleIdRef)) -
+        Number(/arduino|uno|mega|nano|esp|micro:bit|raspberry/i.test(a.moduleIdRef)));
+
+      for (const part of parts) {
         if (part === breadboard) continue;
         if (skipModules.test(part.moduleIdRef) || /breadboard/i.test(part.moduleIdRef)) continue;
         const fzpPath = await findFzpByModuleId(part.moduleIdRef);
@@ -373,6 +557,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         const groundId = connectors.filter(connector => groundName.test(connector.name)).at(-1)?.id;
         if (!powerId && !groundId) continue;
 
+        const railColumn = railColumns[Math.min(railSlot, railColumns.length - 1)];
         const railPlus = `pin${railColumn}W`;
         const railMinus = `pin${railColumn}X`;
         const [powerPin, groundPin, railPlusPin, railMinusPin] = await Promise.all([
@@ -382,31 +567,64 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           findPinPosition(breadboardFzp, railMinus)
         ]);
         const label = part.title || part.moduleIdRef;
+        const scenePoint = (owner: InstanceInfo, pin: PinPosition) => {
+          const mapped = applyMat(owner.transform, pin);
+          return { x: owner.x + mapped.x, y: owner.y + mapped.y };
+        };
 
         if (powerId && powerPin && railPlusPin) {
-          wireBlocks.push(buildWireInstance({
-            title: `AutoWire5V_${part.modelIndex}`,
+          wireBlocks.push(...routeWire({
+            baseTitle: `AutoWire5V_${part.modelIndex}`,
             color: '#cc1414',
-            from: { modelIndex: part.modelIndex, x: part.x + powerPin.x, y: part.y + powerPin.y },
-            fromConnect: { connectorId: powerId },
-            to: { modelIndex: breadboard.modelIndex, connectorId: railPlus },
-            toPoint: { x: breadboard.x + railPlusPin.x, y: breadboard.y + railPlusPin.y }
+            start: scenePoint(part, powerPin),
+            end: scenePoint(breadboard, railPlusPin),
+            startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: powerId },
+            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railPlus }
           }));
           wired.push({ from: `${label} ${powerId} (power)`, to: `Breadboard ${railPlus} (+ rail)` });
         }
         if (groundId && groundPin && railMinusPin) {
-          wireBlocks.push(buildWireInstance({
-            title: `AutoWireGND_${part.modelIndex}`,
+          wireBlocks.push(...routeWire({
+            baseTitle: `AutoWireGND_${part.modelIndex}`,
             color: '#404040',
-            from: { modelIndex: part.modelIndex, x: part.x + groundPin.x, y: part.y + groundPin.y },
-            fromConnect: { connectorId: groundId },
-            to: { modelIndex: breadboard.modelIndex, connectorId: railMinus },
-            toPoint: { x: breadboard.x + railMinusPin.x, y: breadboard.y + railMinusPin.y }
+            start: scenePoint(part, groundPin),
+            end: scenePoint(breadboard, railMinusPin),
+            startTarget: { kind: 'part', modelIndex: part.modelIndex, connectorId: groundId },
+            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: railMinus }
           }));
           wired.push({ from: `${label} ${groundId} (ground)`, to: `Breadboard ${railMinus} (- rail)` });
         }
         if ((powerId && powerPin) || (groundId && groundPin)) {
-          railColumn += 5;
+          railSlot += 1;
+        }
+      }
+
+      // Join the bottom rail pair (W=+, X=-) to the top pair (Y=+, Z=-): red on the
+      // last column, black on the second-to-last so the jumpers do not overlap.
+      const plusColumn = railColumns.at(-1);
+      const minusColumn = railColumns.at(-2) ?? plusColumn;
+      if (plusColumn !== undefined && minusColumn !== undefined) {
+        const jumpers: Array<{ fromPin: string; toPin: string; color: string; label: string }> = [
+          { fromPin: `pin${plusColumn}W`, toPin: `pin${plusColumn}Y`, color: '#cc1414', label: '+ rails' },
+          { fromPin: `pin${minusColumn}X`, toPin: `pin${minusColumn}Z`, color: '#404040', label: '- rails' }
+        ];
+        for (const jumper of jumpers) {
+          const [fromPin, toPin] = await Promise.all([
+            findPinPosition(breadboardFzp, jumper.fromPin),
+            findPinPosition(breadboardFzp, jumper.toPin)
+          ]);
+          if (!fromPin || !toPin) continue;
+          const fromScene = applyMat(breadboard.transform, fromPin);
+          const toScene = applyMat(breadboard.transform, toPin);
+          wireBlocks.push(...routeWire({
+            baseTitle: `AutoWireRail_${jumper.fromPin}`,
+            color: jumper.color,
+            start: { x: breadboard.x + fromScene.x, y: breadboard.y + fromScene.y },
+            end: { x: breadboard.x + toScene.x, y: breadboard.y + toScene.y },
+            startTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: jumper.fromPin },
+            endTarget: { kind: 'breadboardPin', modelIndex: breadboard.modelIndex, connectorId: jumper.toPin }
+          }));
+          wired.push({ from: `Breadboard ${jumper.fromPin}`, to: `Breadboard ${jumper.toPin} (${jumper.label})` });
         }
       }
 
