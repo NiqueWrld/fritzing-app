@@ -103,6 +103,7 @@ protected:
 ////////////////////////////////////////////////////
 
 class MainWindow;
+class QProcess;
 
 using ExportFunction = std::function<void(MainWindow*, const QString&, const QDir&)>;
 
@@ -170,6 +171,8 @@ protected:
 	void clearModels();
 	bool notify(QObject *receiver, QEvent *e);
 	void initService();
+	void startMcpServer();
+	void stopMcpServer();
 	void runPortService();
 	void runDRCService();
 	void runGedaService();
@@ -241,6 +244,7 @@ protected:
 	QHash<QString, struct LockedFile *> m_lockedFiles;
 	int m_portNumber = 0;
 	FServer * m_fServer = nullptr;
+	QProcess * m_mcpProcess = nullptr;
 	QString m_buildType;
 	QString m_debugLogFilename;
 };

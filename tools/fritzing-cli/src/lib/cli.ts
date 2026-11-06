@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
 import { McpServer } from '@modelcontextprotocol/server';
+import {
+  localhostHostValidation,
+  localhostOriginValidation,
+  NodeStreamableHTTPServerTransport
+} from '@modelcontextprotocol/node';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import { constants, watch } from 'node:fs';
+import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { EOL, homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -26,11 +33,6 @@ function normalizeSketchExtension(sketchPath: string): string {
   }
   return extname(sketchPath).toLowerCase();
 }
-
-const server = new McpServer({
-  name: 'fritzing-workspace',
-  version: '0.1.0'
-});
 
 export function resolveWorkspacePath(pathValue?: string): string {
   if (!pathValue || pathValue.trim().length === 0) {
@@ -278,6 +280,12 @@ export async function listRunningFritzingInstances(): Promise<FritzingInstance[]
     };
   });
 }
+
+function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: 'fritzing-workspace',
+    version: '0.1.0'
+  });
 
 server.registerTool(
   'help',
@@ -531,6 +539,9 @@ server.registerTool(
     content: [{ type: 'text', text: await readSketchSummary(resolveWorkspacePath(sketchPath)) }]
   })
 );
+
+  return server;
+}
 
 function escapeXml(value: string): string {
   return value
@@ -793,6 +804,7 @@ function printCliUsage(): void {
     '  node dist/index.js watch-project --path sketches/core/555TouchSwitch.fzz --delay 500',
     '  node dist/index.js serve --port 3000',
     '  node dist/index.js --mcp',
+    '  node dist/index.js --mcp-http',
     '',
     'Options:',
     '  --folder <path>      Search folder relative to the workspace root or absolute.',
@@ -810,6 +822,7 @@ function printCliUsage(): void {
     '  --overwrite          Allow replacing an existing file or destination path.',
     '  --recursive          Delete folders recursively.',
     '  --mcp                Start the stdio MCP server instead of CLI mode.',
+    '  --mcp-http           Start the Streamable HTTP MCP server on port 17998.',
     '',
     'Commands:',
     '  running-instances    List active Windows Fritzing processes with PID, executable, and launch command.'
@@ -826,7 +839,7 @@ async function runCli(argv: string[]): Promise<number> {
 
   if (args.includes('--mcp') || args[0] === 'mcp') {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
+    await createMcpServer().connect(transport);
     return 0;
   }
 
@@ -1050,9 +1063,57 @@ async function runCli(argv: string[]): Promise<number> {
 
 export async function main(): Promise<void> {
   const argv = process.argv;
+  if (argv.includes('--mcp-http')) {
+    const port = Number(process.env.FRITZING_MCP_PORT ?? '17998');
+    const sessions = new Map<string, NodeStreamableHTTPServerTransport>();
+    const validateHost = localhostHostValidation();
+    const validateOrigin = localhostOriginValidation();
+    const httpServer = createServer((req, res) => {
+      if (new URL(req.url ?? '/', 'http://127.0.0.1').pathname !== '/mcp') {
+        res.writeHead(404).end();
+        return;
+      }
+      if (!validateHost(req, res) || !validateOrigin(req, res)) return;
+      void (async () => {
+        const sessionHeader = req.headers['mcp-session-id'];
+        const sessionId = Array.isArray(sessionHeader) ? sessionHeader[0] : sessionHeader;
+        let transport = sessionId ? sessions.get(sessionId) : undefined;
+        if (sessionId && !transport) {
+          res.writeHead(404).end();
+          return;
+        }
+
+        if (!transport) {
+          const sessionServer = createMcpServer();
+          const sessionTransport = new NodeStreamableHTTPServerTransport({
+            sessionIdGenerator: randomUUID,
+            enableJsonResponse: true,
+            onsessioninitialized: id => { sessions.set(id, sessionTransport); },
+            onsessionclosed: id => { sessions.delete(id); }
+          });
+          await sessionServer.connect(sessionTransport);
+          transport = sessionTransport;
+        }
+
+        await transport.handleRequest(req, res);
+      })().catch((error: unknown) => {
+        console.error(error instanceof Error ? error.message : String(error));
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
+    });
+
+    await new Promise<void>((resolvePromise, reject) => {
+      httpServer.once('error', reject);
+      httpServer.listen(port, '127.0.0.1', () => resolvePromise());
+    });
+    console.error(`Fritzing MCP listening on http://127.0.0.1:${port}/mcp`);
+    return;
+  }
+
   if (argv.includes('--mcp') || argv.includes('mcp')) {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
+    await createMcpServer().connect(transport);
     return;
   }
 

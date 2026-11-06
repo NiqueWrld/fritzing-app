@@ -2,7 +2,7 @@
 
 This package now runs as a simple Node CLI for working with Fritzing sketches, parts, and repository files.
 
-It still supports the original MCP server mode when needed, but the default path is a plain command-line workflow that is easier to run and script.
+It supports CLI commands, stdio MCP for direct use, and Streamable HTTP MCP for the Fritzing desktop app.
 
 ## Commands
 
@@ -12,7 +12,8 @@ It still supports the original MCP server mode when needed, but the default path
 - `read-sketch-model --path sketches/core/555TouchSwitch.fzz`: print the embedded `.fz` XML.
 - `find-parts --query 555 --limit 10`: search installed part definitions.
 - `update-parts-library`: pull the configured official `fritzing-parts` repo.
-- `mcp`: start the MCP transport for Copilot integration.
+- `mcp`: start the stdio MCP transport for direct use.
+- `--mcp-http`: start Streamable HTTP MCP on `127.0.0.1:17998`.
 
 ## Setup
 
@@ -29,10 +30,10 @@ node dist/index.js list-sketches --folder sketches --limit 10
 node dist/index.js inspect-sketch --path sketches/core/555TouchSwitch.fzz
 ```
 
-For the original Copilot/MCP flow:
+Fritzing starts the HTTP MCP service when the desktop app opens, if Node.js and the built CLI are available. VS Code connects through `.vscode/mcp.json`. To run the HTTP service manually instead:
 
 ```powershell
-node dist/index.js --mcp
+node dist/index.js --mcp-http
 ```
 
 ## File Editing
@@ -43,6 +44,4 @@ The CLI can read and write repository files, and it can inspect or update sketch
 
 Use `find-parts` before creating a custom part and `update-parts-library` to pull the official parts repo.
 
-## Existing VS Code MCP config
-
-The workspace `.vscode/mcp.json` can still point to the JSON-RPC server if you want Copilot integration, but the simpler default is the CLI, which requires no MCP transport.
+The legacy stdio MCP transport remains available with `node dist/index.js --mcp` for clients that launch the server process directly.

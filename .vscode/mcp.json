@@ -1,14 +1,8 @@
 {
   "servers": {
     "fritzing-workspace": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["tools/fritzing-cli/dist/index.js"],
-      "env": {
-        "FRITZING_EXECUTABLE": "C:\\Program Files\\Fritzing\\Fritzing.exe",
-        "FRITZING_PARTS_PATH": "C:\\Users\\SYS-ADMIN\\OneDrive - Thekwini TVET College\\Desktop\\fritzing-parts",
-        "FRITZING_FTESTING_PORT": "17999"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:17998/mcp"
     }
   }
 }

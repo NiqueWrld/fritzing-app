@@ -18,6 +18,7 @@
     "mcp": "node dist/index.js --mcp"
   },
   "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "latest",
     "adm-zip": "^0.6.0",
     "zod": "latest"

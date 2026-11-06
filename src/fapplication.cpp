@@ -86,6 +86,9 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QTemporaryFile>
 #include <QDir>
 #include <QMetaType>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
 
 #ifdef LINUX_32
 #define PLATFORM_NAME "linux-32bit"
@@ -780,6 +783,7 @@ int FApplication::init() {
 
 FApplication::~FApplication(void)
 {
+	stopMcpServer();
 	cleanupBackups();
 
 	clearModels();
@@ -1492,6 +1496,7 @@ int FApplication::startup()
 	connect(m_updateDialog, SIGNAL(enableAgainSignal(bool)), this, SLOT(enableCheckUpdates(bool)));
 	connect(m_updateDialog, SIGNAL(installNewParts()), this, SLOT(installNewParts()));
 	checkForUpdates(false);
+	startMcpServer();
 
 	return 0;
 }
@@ -1511,8 +1516,73 @@ void FApplication::registerFont(const QString &fontFile, bool reallyRegister) {
 
 void FApplication::finish()
 {
+	stopMcpServer();
 	// Version tracking is now handled by version groups created on startup.
 	// The legacy "version" key is preserved but no longer written.
+}
+
+void FApplication::startMcpServer()
+{
+	QString nodeExecutable = qEnvironmentVariable("FRITZING_NODE_EXECUTABLE");
+	if (nodeExecutable.isEmpty()) {
+		nodeExecutable = QStandardPaths::findExecutable("node");
+	}
+	if (nodeExecutable.isEmpty()) {
+		qWarning() << "MCP server not started: Node.js was not found";
+		return;
+	}
+
+	QString scriptPath = qEnvironmentVariable("FRITZING_MCP_SCRIPT");
+	QStringList scriptCandidates;
+	if (!scriptPath.isEmpty()) scriptCandidates << scriptPath;
+	scriptCandidates << QDir(QCoreApplication::applicationDirPath()).filePath("../../tools/fritzing-cli/dist/index.js")
+		<< QDir(QCoreApplication::applicationDirPath()).filePath("tools/fritzing-cli/dist/index.js")
+		<< QDir::current().filePath("tools/fritzing-cli/dist/index.js");
+
+	for (const QString &candidate : scriptCandidates) {
+		QFileInfo scriptInfo(candidate);
+		if (scriptInfo.isFile()) {
+			scriptPath = scriptInfo.absoluteFilePath();
+			break;
+		}
+		scriptPath.clear();
+	}
+	if (scriptPath.isEmpty()) {
+		qWarning() << "MCP server not started: set FRITZING_MCP_SCRIPT to the CLI dist/index.js path";
+		return;
+	}
+
+	QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+	environment.insert("FRITZING_EXECUTABLE", QCoreApplication::applicationFilePath());
+	environment.insert("FRITZING_MCP_PORT", "17998");
+
+	QDir cliDirectory(QFileInfo(scriptPath).absolutePath());
+	cliDirectory.cdUp();
+	m_mcpProcess = new QProcess(this);
+	m_mcpProcess->setProgram(nodeExecutable);
+	m_mcpProcess->setArguments({scriptPath, "--mcp-http"});
+	m_mcpProcess->setWorkingDirectory(cliDirectory.absolutePath());
+	m_mcpProcess->setProcessEnvironment(environment);
+	m_mcpProcess->start();
+	if (!m_mcpProcess->waitForStarted(3000)) {
+		qWarning() << "MCP server failed to start:" << m_mcpProcess->errorString();
+		delete m_mcpProcess;
+		m_mcpProcess = nullptr;
+	}
+}
+
+void FApplication::stopMcpServer()
+{
+	if (m_mcpProcess == nullptr) return;
+	if (m_mcpProcess->state() != QProcess::NotRunning) {
+		m_mcpProcess->terminate();
+		if (!m_mcpProcess->waitForFinished(3000)) {
+			m_mcpProcess->kill();
+			m_mcpProcess->waitForFinished();
+		}
+	}
+	delete m_mcpProcess;
+	m_mcpProcess = nullptr;
 }
 
 void FApplication::loadNew(QString path) {
