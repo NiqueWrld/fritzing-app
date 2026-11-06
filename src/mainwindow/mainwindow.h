@@ -267,6 +267,8 @@ public:
 	// probe to read the current window's sketch; null if it has been torn down.
 	// Defined in the .cpp: QPointer's conversion needs the complete SketchModel type.
 	class SketchModel * sketchModel() const;
+	bool isSketchUntitled();
+	QString currentViewName();
 
 Q_SIGNALS:
 	void alienPartsDismissed();

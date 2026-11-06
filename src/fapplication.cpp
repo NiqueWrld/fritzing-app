@@ -86,6 +86,12 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QTemporaryFile>
 #include <QDir>
 #include <QMetaType>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
@@ -1496,6 +1502,7 @@ int FApplication::startup()
 	connect(m_updateDialog, SIGNAL(enableAgainSignal(bool)), this, SLOT(enableCheckUpdates(bool)));
 	connect(m_updateDialog, SIGNAL(installNewParts()), this, SLOT(installNewParts()));
 	checkForUpdates(false);
+	startControlServer();
 	startMcpServer();
 
 	return 0;
@@ -1517,8 +1524,180 @@ void FApplication::registerFont(const QString &fontFile, bool reallyRegister) {
 void FApplication::finish()
 {
 	stopMcpServer();
+	stopControlServer();
 	// Version tracking is now handled by version groups created on startup.
 	// The legacy "version" key is preserved but no longer written.
+}
+
+void FApplication::startControlServer()
+{
+	if (m_controlServer != nullptr) return;
+
+	const QString serverName = QString("fritzing-control-%1").arg(QCoreApplication::applicationPid());
+	QLocalServer::removeServer(serverName);
+	m_controlServer = new QLocalServer(this);
+	m_controlServer->setSocketOptions(QLocalServer::UserAccessOption);
+	connect(m_controlServer, &QLocalServer::newConnection, this, &FApplication::handleControlConnection);
+	if (!m_controlServer->listen(serverName)) {
+		qWarning() << "Unable to start Fritzing control socket:" << m_controlServer->errorString();
+		delete m_controlServer;
+		m_controlServer = nullptr;
+	}
+}
+
+void FApplication::stopControlServer()
+{
+	if (m_controlServer == nullptr) return;
+	const QString serverName = m_controlServer->serverName();
+	m_controlServer->close();
+	QLocalServer::removeServer(serverName);
+	delete m_controlServer;
+	m_controlServer = nullptr;
+}
+
+void FApplication::handleControlConnection()
+{
+	while (m_controlServer != nullptr && m_controlServer->hasPendingConnections()) {
+		QLocalSocket *socket = m_controlServer->nextPendingConnection();
+		connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
+		connect(socket, &QLocalSocket::readyRead, this, [this, socket]() {
+			if (!socket->canReadLine()) return;
+
+			QJsonParseError parseError;
+			const QJsonDocument document = QJsonDocument::fromJson(socket->readLine().trimmed(), &parseError);
+			QJsonObject response;
+			if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+				response.insert("ok", false);
+				response.insert("error", "Invalid control request JSON.");
+			} else {
+				response = handleControlRequest(document.object());
+			}
+			socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
+			socket->flush();
+			socket->disconnectFromServer();
+		});
+	}
+}
+
+QJsonObject FApplication::handleControlRequest(const QJsonObject &request)
+{
+	auto failure = [](const QString &message) {
+		return QJsonObject{{"ok", false}, {"error", message}};
+	};
+	auto allMainWindows = [this]() {
+		QList<MainWindow *> windows = orderedTopLevelMainWindows();
+		for (QWidget *widget : QApplication::topLevelWidgets()) {
+			auto *window = qobject_cast<MainWindow *>(widget);
+			if (window != nullptr && !windows.contains(window)) windows.append(window);
+		}
+		return windows;
+	};
+	auto windowInfo = [](MainWindow *window) {
+		const bool unsaved = window->isSketchUntitled();
+		return QJsonObject{
+			{"pid", static_cast<qint64>(QCoreApplication::applicationPid())},
+			{"windowId", QString::number(static_cast<qulonglong>(window->winId()))},
+			{"path", unsaved ? QString("unsaved") : QFileInfo(window->fileName()).absoluteFilePath()},
+			{"unsavedChanges", window->isWindowModified()},
+			{"view", window->currentViewName()}
+		};
+	};
+	const QString command = request.value("command").toString();
+	const qint64 requestedPid = request.value("pid").toVariant().toLongLong();
+	if (requestedPid != 0 && requestedPid != QCoreApplication::applicationPid()) {
+		return failure(QString("This control channel belongs to Fritzing PID %1, not PID %2.")
+			.arg(QCoreApplication::applicationPid()).arg(requestedPid));
+	}
+
+	QList<MainWindow *> windows = allMainWindows();
+	if (command == "get_open_sketches") {
+		QJsonArray sketches;
+		for (MainWindow *window : windows) sketches.append(windowInfo(window));
+		return QJsonObject{{"ok", true}, {"result", sketches}};
+	}
+
+	MainWindow *window = nullptr;
+	const QString requestedWindowId = request.value("windowId").toString();
+	if (!requestedWindowId.isEmpty()) {
+		for (MainWindow *candidate : windows) {
+			if (QString::number(static_cast<qulonglong>(candidate->winId())) == requestedWindowId) {
+				window = candidate;
+				break;
+			}
+		}
+		if (window == nullptr) return failure(QString("No open Fritzing window has ID %1.").arg(requestedWindowId));
+	} else {
+		window = currentMainWindow();
+		if (window == nullptr && !windows.isEmpty()) window = windows.first();
+	}
+	if (command != "open_sketch" && window == nullptr) return failure("No open Fritzing sketch window was found.");
+
+	if (command == "save_sketch") {
+		const QString requestedPath = request.value("path").toString().trimmed();
+		const bool currentIsUnsaved = window->isSketchUntitled();
+		if (requestedPath.isEmpty() && currentIsUnsaved) {
+			return failure("Save cancelled: provide a full path to save this untitled sketch.");
+		}
+		const QString targetPath = QFileInfo(requestedPath.isEmpty() ? window->fileName() : requestedPath).absoluteFilePath();
+		const QString suffix = QFileInfo(targetPath).suffix();
+		if (suffix.compare("fz", Qt::CaseInsensitive) != 0 && suffix.compare("fzz", Qt::CaseInsensitive) != 0) {
+			return failure("Save path must end in .fz or .fzz.");
+		}
+		const QString currentPath = currentIsUnsaved ? QString() : QFileInfo(window->fileName()).absoluteFilePath();
+		const bool samePath = !currentPath.isEmpty() && targetPath.compare(currentPath, Qt::CaseInsensitive) == 0;
+		const QFileInfo targetInfo(targetPath);
+		if (targetInfo.exists() && !samePath && !request.value("overwrite").toBool(false)) {
+			return failure(QString("Refusing to overwrite existing file without overwrite=true: %1").arg(targetPath));
+		}
+		QDir parentDir(QFileInfo(targetPath).absolutePath());
+		if (!parentDir.exists() && !QDir().mkpath(parentDir.absolutePath())) {
+			return failure(QString("Cannot create save folder: %1").arg(parentDir.absolutePath()));
+		}
+		if (!QFileInfo(parentDir.absolutePath()).isWritable()) {
+			return failure(QString("Save folder is not writable: %1").arg(parentDir.absolutePath()));
+		}
+		if (targetInfo.exists() && !targetInfo.isWritable()) {
+			return failure(QString("Save file is not writable: %1").arg(targetPath));
+		}
+		if (!window->saveAsAux(targetPath)) return failure(QString("Save cancelled or failed for: %1").arg(targetPath));
+		return QJsonObject{{"ok", true}, {"result", QJsonObject{{"path", QFileInfo(window->fileName()).absoluteFilePath()}}}};
+	}
+
+	if (command == "open_sketch") {
+		const QString path = QFileInfo(request.value("path").toString()).absoluteFilePath();
+		const QString suffix = QFileInfo(path).suffix();
+		if (suffix.compare("fz", Qt::CaseInsensitive) != 0 && suffix.compare("fzz", Qt::CaseInsensitive) != 0) {
+			return failure("Sketch path must end in .fz or .fzz.");
+		}
+		if (!QFileInfo(path).isFile() || !QFileInfo(path).isReadable()) {
+			return failure(QString("Sketch file is missing or unreadable: %1").arg(path));
+		}
+		MainWindow *newWindow = MainWindow::newMainWindow(m_referenceModel, path, true, true, -1);
+		if (!newWindow->loadWhich(path, false, true, true, QString())) {
+			newWindow->setCloseSilently(true);
+			newWindow->close();
+			return failure(QString("Fritzing could not open sketch: %1").arg(path));
+		}
+		newWindow->clearFileProgressDialog();
+		return QJsonObject{{"ok", true}, {"result", windowInfo(newWindow)}};
+	}
+
+	if (command == "reload_sketch") {
+		if (window->isSketchUntitled()) {
+			return failure("Cannot reload an unsaved sketch.");
+		}
+		if (window->isWindowModified()) return failure("Cannot reload: save or discard the sketch's unsaved changes first.");
+		const QString path = QFileInfo(window->fileName()).absoluteFilePath();
+		if (!QFileInfo(path).isFile() || !QFileInfo(path).isReadable()) {
+			return failure(QString("Sketch file is missing or unreadable: %1").arg(path));
+		}
+		if (!window->loadWhich(path, false, false, false, QString())) {
+			return failure(QString("Fritzing could not reload sketch: %1").arg(path));
+		}
+		return QJsonObject{{"ok", true}, {"result", windowInfo(window)}};
+	}
+
+	return failure(QString("Unknown Fritzing control command: %1").arg(command));
 }
 
 void FApplication::startMcpServer()

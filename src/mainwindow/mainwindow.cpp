@@ -424,6 +424,19 @@ int MainWindow::currentTabIndex() {
 	return qobject_cast<QTabWidget *>(m_tabWidget)->currentIndex();
 }
 
+bool MainWindow::isSketchUntitled() {
+	return FolderUtils::isEmptyFileName(m_fwFilename, untitledFileName());
+}
+
+QString MainWindow::currentViewName() {
+	switch (currentTabIndex()) {
+	case 0: return "Breadboard";
+	case 1: return "Schematic";
+	case 2: return "PCB";
+	default: return "Unknown";
+	}
+}
+
 void MainWindow::setCurrentTabIndex(int index) {
 	qobject_cast<QTabWidget *>(m_tabWidget)->setCurrentIndex(index);
 }

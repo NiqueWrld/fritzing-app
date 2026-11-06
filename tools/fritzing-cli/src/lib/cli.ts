@@ -11,9 +11,10 @@ import AdmZip from 'adm-zip';
 import { spawn } from 'node:child_process';
 import { constants, watch } from 'node:fs';
 import { createServer } from 'node:http';
+import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { EOL, homedir } from 'node:os';
+import { EOL, homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as z from 'zod/v4';
@@ -248,7 +249,7 @@ export async function listRunningFritzingInstances(): Promise<FritzingInstance[]
   }
 
   const script = [
-    "$processes = Get-CimInstance Win32_Process -Filter \"Name = 'Fritzing.exe'\" | ForEach-Object {",
+    "$processes = Get-CimInstance Win32_Process -Filter \"Name = 'Fritzing.exe' OR Name = 'Fritzing-MCP.exe'\" | ForEach-Object {",
     '  [PSCustomObject]@{',
     '    processId = $_.ProcessId',
     '    executablePath = $_.ExecutablePath',
@@ -281,6 +282,55 @@ export async function listRunningFritzingInstances(): Promise<FritzingInstance[]
   });
 }
 
+function fritzingControlSocketPath(processId: number): string {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\fritzing-control-${processId}`
+    : join(tmpdir(), `fritzing-control-${processId}`);
+}
+
+function requestFritzingControl<T>(processId: number, command: string, input: Record<string, unknown> = {}): Promise<T> {
+  return new Promise((resolvePromise, reject) => {
+    const socket = createConnection({ path: fritzingControlSocketPath(processId) });
+    let response = '';
+    const timeout = setTimeout(() => socket.destroy(new Error(`Timed out contacting Fritzing PID ${processId}.`)), 5000);
+    socket.once('connect', () => socket.write(`${JSON.stringify({ command, pid: processId, ...input })}\n`));
+    socket.on('data', chunk => {
+      response += chunk.toString('utf8');
+      const newline = response.indexOf('\n');
+      if (newline < 0) return;
+      clearTimeout(timeout);
+      socket.end();
+      try {
+        const result = JSON.parse(response.slice(0, newline)) as { ok: boolean; result?: T; error?: string };
+        if (!result.ok) reject(new Error(result.error ?? 'Fritzing control request failed.'));
+        else resolvePromise(result.result as T);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    socket.once('error', error => {
+      clearTimeout(timeout);
+      reject(new Error(`Cannot contact Fritzing PID ${processId}: ${error.message}`));
+    });
+  });
+}
+
+async function selectFritzingInstance(processId?: number): Promise<FritzingInstance> {
+  const instances = await listRunningFritzingInstances();
+  if (instances.length === 0) throw new Error('No Fritzing instances are running.');
+  if (processId !== undefined) {
+    const instance = instances.find(candidate => candidate.processId === processId);
+    if (!instance) throw new Error(`No running Fritzing instance has PID ${processId}.`);
+    return instance;
+  }
+  if (instances.length > 1) throw new Error('Multiple Fritzing instances are running; provide a pid.');
+  return instances[0];
+}
+
+function asToolText(value: unknown): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+}
+
 function createMcpServer(): McpServer {
   const server = new McpServer({
     name: 'fritzing-workspace',
@@ -309,21 +359,101 @@ server.registerTool(
       '- inspect_sketch: sketchPath - read basic sketch metadata.',
       '- read_sketch_model: sketchPath - extract editable .fz XML from a .fz or .fzz package.',
       '- write_sketch_model: sketchPath, xml, createBackup? - update a .fz or embedded .fzz model.',
+      '- get_open_sketches: list open Fritzing windows, paths, modified state, and current views.',
+      '- save_sketch: save a live sketch, optionally to path with overwrite protection.',
+      '- open_sketch: open a .fz or .fzz file in a running Fritzing window.',
+      '- reload_sketch: reload a clean open sketch from disk.',
       '',
       'Parts tools:',
       '- find_parts: query, limit? - find installed part definitions and moduleIds.',
       '- update_parts_library: pull the configured fritzing-parts Git repository to get the newest official parts.',
       '',
       'Process tools:',
-      '- running-instances: list active Windows Fritzing processes, including their PID, executable path, and launch command.',
+      '- running_instances: list active Windows Fritzing processes, including their PID, executable path, and launch command.',
       '',
-      'Fritzing does not need to be running. Sketch tools directly edit .fz XML and the embedded .fz model in .fzz packages.',
+      'Disk sketch tools work without Fritzing. Live window tools require the MCP-enabled Fritzing app to be running.',
       'Relative paths are resolved from the repository root. Repository file tools are restricted to this repository.'
     ];
 
     return {
       content: [{ type: 'text', text: lines.join(EOL) }]
     };
+  }
+);
+
+server.registerTool(
+  'running_instances',
+  {
+    description: 'List running Fritzing application processes and their PIDs.',
+    inputSchema: z.object({})
+  },
+  async () => asToolText(await listRunningFritzingInstances())
+);
+
+server.registerTool(
+  'get_open_sketches',
+  {
+    description: 'List open Fritzing windows, their sketch paths, unsaved state, and current views.',
+    inputSchema: z.object({})
+  },
+  async () => {
+    const instances = await listRunningFritzingInstances();
+    if (instances.length === 0) throw new Error('No Fritzing instances are running.');
+    const results = await Promise.all(instances.map(async instance => {
+      try {
+        return { processId: instance.processId, windows: await requestFritzingControl<unknown[]>(instance.processId, 'get_open_sketches') };
+      } catch (error) {
+        return { processId: instance.processId, error: error instanceof Error ? error.message : String(error) };
+      }
+    }));
+    return asToolText({ instances: results });
+  }
+);
+
+server.registerTool(
+  'save_sketch',
+  {
+    description: 'Save a live Fritzing sketch, optionally to an exact path with overwrite protection.',
+    inputSchema: z.object({
+      pid: z.number().int().positive().optional().describe('Fritzing process ID; required when multiple instances are running.'),
+      windowId: z.string().optional().describe('Window ID returned by get_open_sketches.'),
+      path: z.string().optional().describe('Exact full path for Save As; required for an untitled sketch.'),
+      overwrite: z.boolean().default(false).describe('Allow replacing an existing target file.')
+    })
+  },
+  async ({ pid, windowId, path, overwrite }) => {
+    const instance = await selectFritzingInstance(pid);
+    return asToolText(await requestFritzingControl(instance.processId, 'save_sketch', { windowId, path, overwrite }));
+  }
+);
+
+server.registerTool(
+  'open_sketch',
+  {
+    description: 'Open a .fz or .fzz sketch in a running Fritzing instance.',
+    inputSchema: z.object({
+      pid: z.number().int().positive().optional().describe('Fritzing process ID; required when multiple instances are running.'),
+      path: z.string().min(1).describe('Full path to an existing .fz or .fzz file.')
+    })
+  },
+  async ({ pid, path }) => {
+    const instance = await selectFritzingInstance(pid);
+    return asToolText(await requestFritzingControl(instance.processId, 'open_sketch', { path }));
+  }
+);
+
+server.registerTool(
+  'reload_sketch',
+  {
+    description: 'Reload a saved, unmodified open sketch from disk.',
+    inputSchema: z.object({
+      pid: z.number().int().positive().optional().describe('Fritzing process ID; required when multiple instances are running.'),
+      windowId: z.string().optional().describe('Window ID returned by get_open_sketches.')
+    })
+  },
+  async ({ pid, windowId }) => {
+    const instance = await selectFritzingInstance(pid);
+    return asToolText(await requestFritzingControl(instance.processId, 'reload_sketch', { windowId }));
   }
 );
 

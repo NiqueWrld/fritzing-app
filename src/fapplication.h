@@ -104,6 +104,9 @@ protected:
 
 class MainWindow;
 class QProcess;
+class QLocalServer;
+class QLocalSocket;
+class QJsonObject;
 
 using ExportFunction = std::function<void(MainWindow*, const QString&, const QDir&)>;
 
@@ -171,6 +174,10 @@ protected:
 	void clearModels();
 	bool notify(QObject *receiver, QEvent *e);
 	void initService();
+	void startControlServer();
+	void stopControlServer();
+	void handleControlConnection();
+	QJsonObject handleControlRequest(const QJsonObject &request);
 	void startMcpServer();
 	void stopMcpServer();
 	void runPortService();
@@ -245,6 +252,7 @@ protected:
 	int m_portNumber = 0;
 	FServer * m_fServer = nullptr;
 	QProcess * m_mcpProcess = nullptr;
+	QLocalServer * m_controlServer = nullptr;
 	QString m_buildType;
 	QString m_debugLogFilename;
 };
