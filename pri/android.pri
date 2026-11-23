@@ -60,8 +60,7 @@ QT += core5compat
 
 DEFINES += LINUX_64 FRITZING_ANDROID
 
-# Android packaging sources; Qt default template is used until this exists.
-# Uncomment once android/ (AndroidManifest.xml, assets) exists:
-# ANDROID_PACKAGE_SOURCE_DIR = $$PWD/../android
+# Android packaging sources: manifest (package org.fritzing.Fritzing) and launcher icons.
+ANDROID_PACKAGE_SOURCE_DIR = $$PWD/../android
 ANDROID_VERSION_NAME = 1.0.6
-ANDROID_VERSION_CODE = 1
+ANDROID_VERSION_CODE = 2
