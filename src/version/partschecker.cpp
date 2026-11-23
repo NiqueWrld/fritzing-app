@@ -19,6 +19,8 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 ********************************************************************/
 
 #include "partschecker.h"
+
+#include <QFile>
 #include "debugdialog.h"
 #include "utils/fmessagebox.h"
 
@@ -462,6 +464,17 @@ QString PartsChecker::getSha(const QString & repoPath) {
 	QString sha;
 	git_repository * repository = nullptr;
 	char buffer[GIT_OID_HEXSZ + 1] = {0};
+
+#ifdef Q_OS_ANDROID
+	// The parts bundled in the APK have no .git folder; tools/android/stage-assets.ps1
+	// records the parts commit in .parts-sha instead.
+	{
+		QFile shaFile(repoPath + "/.parts-sha");
+		if (shaFile.open(QIODevice::ReadOnly)) {
+			return QString::fromLatin1(shaFile.readAll().trimmed());
+		}
+	}
+#endif
 
 	git_libgit2_init();
 

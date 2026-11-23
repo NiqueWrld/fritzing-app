@@ -25,6 +25,11 @@ Write-Host "Copying fritzing-parts..."
 robocopy $PartsDir "$staging\fritzing-parts" /E /XD .git .github /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy of parts failed ($LASTEXITCODE)" }
 
+# No .git ships in the APK, so record the parts commit for PartsChecker::getSha().
+if (-not (Test-Path "$PartsDir\.git")) { throw "$PartsDir must be a git checkout (its commit is recorded in .parts-sha)" }
+$partsSha = (git -C $PartsDir rev-parse HEAD).Trim()
+Set-Content -Path "$staging\fritzing-parts\.parts-sha" -Value $partsSha -Encoding ascii -NoNewline
+
 foreach ($dir in 'help', 'sketches') {
 	robocopy "$repo\$dir" "$staging\$dir" /E /NFL /NDL /NJH /NJS /NP | Out-Null
 	if ($LASTEXITCODE -ge 8) { throw "robocopy of $dir failed ($LASTEXITCODE)" }
@@ -43,7 +48,8 @@ if (Test-Path $zip) { Remove-Item $zip }
 Write-Host "Zipping to $zip..."
 Push-Location $staging
 try {
-	tar.exe -a -cf $zip *
+	# Windows' bsdtar writes zip; Git Bash's GNU tar (if first on PATH) can't.
+	& (Join-Path $env:SystemRoot "System32\tar.exe") -a -cf $zip *
 	if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 

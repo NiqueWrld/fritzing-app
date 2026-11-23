@@ -1501,7 +1501,10 @@ int FApplication::startup()
 	m_updateDialog->setRepoPath(FolderUtils::getAppPartsSubFolderPath(""), m_referenceModel->sha());
 	connect(m_updateDialog, SIGNAL(enableAgainSignal(bool)), this, SLOT(enableCheckUpdates(bool)));
 	connect(m_updateDialog, SIGNAL(installNewParts()), this, SLOT(installNewParts()));
+#ifndef Q_OS_ANDROID
+	// Bundled parts on Android aren't a git checkout, so they can't be updated in place.
 	checkForUpdates(false);
+#endif
 	startControlServer();
 	startMcpServer();
 
