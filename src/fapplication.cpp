@@ -19,6 +19,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 ********************************************************************/
 
 #include "fapplication.h"
+#include <QElapsedTimer>
 #include "debugdialog.h"
 #include "utils/misc.h"
 #include "mainwindow/mainwindow.h"
@@ -1019,9 +1020,14 @@ bool FApplication::loadReferenceModel(const QString &  databaseName, bool fullLo
 	if (databaseName.isEmpty() && !dbExists) {
 		db = dbPath;
 	}
+	QElapsedTimer loadTimer;
+	loadTimer.start();
+	qInfo("[startup] parts db %s (%lld bytes): %s", dbExists ? "found" : "missing, building", static_cast<long long>(info.size()), qPrintable(dbPath));
 	bool ok = referenceModel->loadAll(db, !dbExists, dbExists);
+	qInfo("[startup]   loadAll %lld ms", static_cast<long long>(loadTimer.restart()));
 	if (ok && dbExists) {
 		referenceModel->loadFromDB(dbPath);
+		qInfo("[startup]   loadFromDB %lld ms", static_cast<long long>(loadTimer.elapsed()));
 	}
 	return ok;
 }
@@ -1419,6 +1425,13 @@ int FApplication::startup()
 {
 	//DebugDialog::setEnabled(true);
 
+	// Phase timings go to the system log (logcat on Android) even in release builds.
+	QElapsedTimer startupTimer;
+	startupTimer.start();
+	auto startupMark = [&startupTimer](const char * phase) {
+		qInfo("[startup] %-24s %6lld ms", phase, static_cast<long long>(startupTimer.elapsed()));
+	};
+
 	QString splashName = ":/resources/images/splash/splash_screen_start.png";
 	QDateTime now = QDateTime::currentDateTime();
 	if (now.date().month() == 4 && now.date().day() == 1) {
@@ -1436,10 +1449,12 @@ int FApplication::startup()
 
 	initSplash(splash);
 	ProcessEventBlocker::processEvents();
+	startupMark("splash shown");
 
 	// DebugDialog::debug("Data Location: "+QDesktopServices::storageLocation(QDesktopServices::DataLocation));
 
 	registerFonts();
+	startupMark("fonts registered");
 
 	if (m_progressIndex >= 0) splash.showProgress(m_progressIndex, LoadProgressStart);
 	ProcessEventBlocker::processEvents();
@@ -1461,6 +1476,7 @@ int FApplication::startup()
 #endif
 
 	createUserDataStoreFolderStructures();
+	startupMark("user folders");
 
 	// Parts are not shipped with the app: fetch (or update) them from the cloud,
 	// unless a parts folder was given on the command line (-parts).
@@ -1488,11 +1504,13 @@ int FApplication::startup()
 		                   "fritzingText", Qt::AlignLeft | Qt::AlignTop);
 	}
 
+	startupMark("cloud parts checked");
 	cleanFzzs();
 
 	ProcessEventBlocker::processEvents();
 
 	loadReferenceModel("", false);
+	startupMark("parts loaded");
 
 	ProcessEventBlocker::processEvents();
 
@@ -1515,8 +1533,10 @@ int FApplication::startup()
 	if (m_progressIndex >= 0) splash.showProgress(m_progressIndex, 0.65);
 	ProcessEventBlocker::processEvents();
 
+	startupMark("before main window");
 	loadSomething();
 	m_started = true;
+	startupMark("main window shown");
 
 	if (m_progressIndex >= 0) splash.showProgress(m_progressIndex, 0.99);
 	ProcessEventBlocker::processEvents();

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown by Android before Qt draws its first frame, so launch starts on the
+         splash screen's blue instead of a blank window. -->
+    <style name="FritzingLaunchTheme" parent="android:Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/fritzing_blue</item>
+        <item name="android:statusBarColor">@color/fritzing_blue_dark</item>
+        <item name="android:navigationBarColor">@color/fritzing_blue_dark</item>
+    </style>
+    <color name="fritzing_blue">#216AD6</color>
+    <color name="fritzing_blue_dark">#083982</color>
+</resources>

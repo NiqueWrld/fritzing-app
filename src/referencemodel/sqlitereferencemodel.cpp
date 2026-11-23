@@ -579,9 +579,16 @@ bool SqliteReferenceModel::createDatabase(const QString & databaseName, bool ful
 	m_database = QSqlDatabase::addDatabase("QSQLITE");
 	m_database.setDatabaseName(databaseName.isEmpty() ? ":memory:" : databaseName);
 	if (!m_database.open()) {
+		qWarning("Parts database open failed for %s: %s", qPrintable(m_database.databaseName()), qPrintable(m_database.lastError().text()));
 		m_swappingEnabled = false;
 	}
 	else {
+#ifdef Q_OS_ANDROID
+		// SQLite's default temp-file locations (/var/tmp, /tmp) don't exist on Android, so
+		// building the indexes failed with "disk I/O error". That rolled back the whole
+		// transaction, parts.db stayed empty, and every launch rebuilt the parts database.
+		QSqlQuery(m_database).exec("PRAGMA temp_store = MEMORY");
+#endif
 		if (fullLoad) {
 			DebugDialog::debug("Fetching icons from server");
 			ServiceIconFetcher::instance()->fetchIcons();
@@ -732,7 +739,9 @@ bool SqliteReferenceModel::createDatabase(const QString & databaseName, bool ful
 		createIndexes();
 		createMoreIndexes(m_database);
 
-		m_database.commit();
+		if (!m_database.commit()) {
+			qWarning("Parts database commit failed for %s: %s", qPrintable(m_database.databaseName()), qPrintable(m_database.lastError().text()));
+		}
 
 	}
 	return m_swappingEnabled;
