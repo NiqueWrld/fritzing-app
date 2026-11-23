@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSketch } from '../context/SketchContext'
 import { useTheme } from '../context/ThemeContext'
-import { fetchJson } from '../lib/api'
+import { fetchJson, partImageUrl } from '../lib/api'
 
 async function fetchSvg(sketchPath: string): Promise<string> {
   const response = await fetch(`/api/sketch/svg?path=${encodeURIComponent(sketchPath)}&t=${Date.now()}`)
@@ -230,7 +230,7 @@ export default function Breadboard() {
           await new Promise(resolve => {
             image.onload = resolve
             image.onerror = resolve
-            image.src = `/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`
+            image.src = partImageUrl(part.moduleIdRef)
           })
           if (!image.naturalWidth) continue
           context.save()
@@ -412,7 +412,7 @@ export default function Breadboard() {
                 return (
                   <img
                     key={`${part.moduleIdRef}-${index}`}
-                    src={`/api/part/image?moduleId=${encodeURIComponent(part.moduleIdRef)}`}
+                    src={partImageUrl(part.moduleIdRef)}
                     alt={part.title}
                     title={part.title}
                     className="absolute origin-top-left"

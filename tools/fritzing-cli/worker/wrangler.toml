@@ -1,0 +1,15 @@
+name = "fritzing-storage"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Your Firebase project ID (same as VITE_FIREBASE_PROJECT_ID in the UI).
+FIREBASE_PROJECT_ID = "fritzing-niquewrld"
+# Comma-separated origins allowed to call this Worker.
+ALLOWED_ORIGINS = "http://localhost:5173"
+# Per-file size limit in bytes (default 25 MB).
+MAX_FILE_BYTES = "26214400"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "fritzing-user-files"

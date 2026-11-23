@@ -2,3 +2,5 @@ node_modules/
 dist/
 out/
 autowire-settings.json
+# Parts library upload token (secret)
+.parts-upload-token

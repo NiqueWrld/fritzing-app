@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local env (Firebase keys, storage URL)
+.env
+.env.*
+!.env.example

@@ -1,5 +1,6 @@
-import { CircuitryIcon, CpuIcon, FileCodeIcon, GearIcon, PlugsConnectedIcon, PuzzlePieceIcon, TreeStructureIcon } from '@phosphor-icons/react'
+import { CircuitryIcon, CpuIcon, FileCodeIcon, GearIcon, PlugsConnectedIcon, PuzzlePieceIcon, TreeStructureIcon, UserCircleIcon } from '@phosphor-icons/react'
 import { NavLink } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
 import { useSketch } from '../../context/SketchContext'
 import { useTheme } from '../../context/ThemeContext'
 
@@ -15,6 +16,7 @@ const links = [
 export default function Sidebar() {
   const { currentSketch } = useSketch()
   const { theme } = useTheme()
+  const { enabled, user } = useAuth()
   const sketchName = currentSketch?.split(/[\\/]/).pop()
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${theme.secondary.surfaceHover} ${
@@ -37,6 +39,12 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      {enabled && (
+        <NavLink to="/login" className={(a) => `mt-auto ${navLinkClass(a)}`} title={user ? 'Cloud storage on' : 'Sign in to enable cloud storage'}>
+          <UserCircleIcon size={18} />
+          <span className="truncate">{user ? (user.email ?? user.displayName ?? 'Account') : 'Sign in'}</span>
+        </NavLink>
+      )}
     </aside>
   )
 }
