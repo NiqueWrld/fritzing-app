@@ -36,6 +36,13 @@ Some of those don't need C++ skills, like reproducing an issue on a certain plat
 
 * **translations** - Language translations
 
+## Local Development Setup (Windows)
+
+* **Qt**: 6.8.3 (MSVC 2022, 64-bit) in `C:\Qt.8.3\msvc2022_64`, installed with [aqtinstall](https://github.com/miurahr/aqtinstall). `phoenix.pro` accepts Qt 6.5.3 through 6.10.10. Its `bin` folder is on the user PATH, so `qmake` works from any new terminal.
+* **Qt Creator**: 20.0.2 in `C:\Qt\Tools\QtCreator` (with the CDB debugger extension), plus a Start menu shortcut. Open `phoenix.pro` and choose the *Qt 6.8.3 MSVC2022 64bit* kit.
+* Building with the MSVC kit needs the Visual Studio 2022 C++ tools (or a "x64 Native Tools Command Prompt for VS 2022" when building from the command line).
+* The web UI, optional Firebase sign-in and Cloudflare cloud storage are documented in [tools/fritzing-cli/README.md](tools/fritzing-cli/README.md).
+
 ## Credits
 
 The Fritzing app was maintained by the Friends-of-Fritzing e.V., a non-profit foundation based in Berlin, Germany. The project has grown out of a state-funded research project at the [Interaction Design Lab](http://idl.fh-potsdam.de) at [Potsdam University of Applied Sciences](http://fh-potsdam.de). 

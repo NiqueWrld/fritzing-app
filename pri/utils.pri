@@ -36,6 +36,7 @@ src/utils/fsizegrip.h \
 src/utils/lockmanager.h \
 src/utils/misc.h \
 src/utils/resizehandle.h \
+src/utils/cloudparts.h \
 src/utils/folderutils.h \
 src/utils/sanitizeforpath.h \
 src/utils/graphicsutils.h \
@@ -67,6 +68,7 @@ src/utils/fsizegrip.cpp \
 src/utils/lockmanager.cpp \
 src/utils/misc.cpp \
 src/utils/resizehandle.cpp \
+src/utils/cloudparts.cpp \
 src/utils/folderutils.cpp \
 src/utils/sanitizeforpath.cpp \
 src/utils/graphicsutils.cpp \

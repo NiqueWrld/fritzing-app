@@ -1,34 +1,27 @@
 # Stages Fritzing's read-only data into the Android build as APK assets.
 #
-# Produces <AndroidBuildDir>/assets/fritzing-data.zip (fritzing-parts, help,
-# sketches, translations) and fritzing-data.version. On first launch the app
-# extracts the zip to app storage (see ensureAndroidDataExtracted() in
-# src/utils/folderutils.cpp). Run after `make` and before androiddeployqt.
+# Produces <AndroidBuildDir>/assets/fritzing-data.zip (help, sketches,
+# translations) and fritzing-data.version. On first launch the app extracts the
+# zip to app storage (see ensureAndroidDataExtracted() in src/utils/folderutils.cpp).
+# Run after `make` and before androiddeployqt.
+#
+# The parts library is NOT packed into the APK: the app downloads it from
+# Cloudflare on first launch (src/utils/cloudparts.cpp). Publish a new parts
+# bundle with `npm run upload-parts` in tools/fritzing-cli/worker.
 #
 # Example:
-#   .\tools\android\stage-assets.ps1 -AndroidBuildDir C:\Android\build\android-build -PartsDir C:\Android\deps\fritzing-parts
+#   .\tools\android\stage-assets.ps1 -AndroidBuildDir C:\Android\build\android-build
 
 param(
-	[Parameter(Mandatory = $true)][string]$AndroidBuildDir,
-	[Parameter(Mandatory = $true)][string]$PartsDir
+	[Parameter(Mandatory = $true)][string]$AndroidBuildDir
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
-if (-not (Test-Path "$PartsDir\core")) { throw "fritzing-parts not found at $PartsDir" }
 
 $staging = Join-Path $env:TEMP "fritzing-android-staging"
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
 New-Item -ItemType Directory $staging | Out-Null
-
-Write-Host "Copying fritzing-parts..."
-robocopy $PartsDir "$staging\fritzing-parts" /E /XD .git .github /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy of parts failed ($LASTEXITCODE)" }
-
-# No .git ships in the APK, so record the parts commit for PartsChecker::getSha().
-if (-not (Test-Path "$PartsDir\.git")) { throw "$PartsDir must be a git checkout (its commit is recorded in .parts-sha)" }
-$partsSha = (git -C $PartsDir rev-parse HEAD).Trim()
-Set-Content -Path "$staging\fritzing-parts\.parts-sha" -Value $partsSha -Encoding ascii -NoNewline
 
 foreach ($dir in 'help', 'sketches') {
 	robocopy "$repo\$dir" "$staging\$dir" /E /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -53,11 +46,10 @@ try {
 	if ($LASTEXITCODE -ne 0) { throw "tar failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
-# Version stamp: changes whenever the app or parts revision changes, which
-# makes the app re-extract the data after an update.
+# Version stamp: changes whenever the app revision changes, which makes the
+# app re-extract the data after an update.
 $appRev = (git -C $repo rev-parse --short HEAD).Trim()
-$partsRev = if (Test-Path "$PartsDir\.git") { (git -C $PartsDir rev-parse --short HEAD).Trim() } else { "noparts-git" }
-$stamp = "$appRev-$partsRev-" + (Get-Date -Format "yyyyMMddHHmmss")
+$stamp = "$appRev-" + (Get-Date -Format "yyyyMMddHHmmss")
 Set-Content -Path (Join-Path $assets "fritzing-data.version") -Value $stamp -Encoding ascii -NoNewline
 
 Remove-Item -Recurse -Force $staging

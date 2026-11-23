@@ -465,16 +465,14 @@ QString PartsChecker::getSha(const QString & repoPath) {
 	git_repository * repository = nullptr;
 	char buffer[GIT_OID_HEXSZ + 1] = {0};
 
-#ifdef Q_OS_ANDROID
-	// The parts bundled in the APK have no .git folder; tools/android/stage-assets.ps1
-	// records the parts commit in .parts-sha instead.
+	// Parts downloaded from the cloud bundle (utils/cloudparts.cpp) have no .git folder;
+	// the bundle records the parts commit in .parts-sha instead.
 	{
 		QFile shaFile(repoPath + "/.parts-sha");
 		if (shaFile.open(QIODevice::ReadOnly)) {
 			return QString::fromLatin1(shaFile.readAll().trimmed());
 		}
 	}
-#endif
 
 	git_libgit2_init();
 

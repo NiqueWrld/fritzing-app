@@ -43,6 +43,7 @@ public:
 	static bool createFolderAndCdIntoIt(QDir &dir, QString newFolder);
 	static bool setApplicationPath(const QString & path);
 	static bool setAppPartsPath(const QString & path);
+	static bool appPartsPathIsSet();
 	static const QString getLibraryPath();
 	static QString getOpenFileName( QWidget * parent = 0, const QString & caption = QString(), const QString & dir = QString(), const QString & filter = QString(), QString * selectedFilter = 0, QFileDialog::Options options = {} );
 	static QStringList getOpenFileNames( QWidget * parent = 0, const QString & caption = QString(), const QString & dir = QString(), const QString & filter = QString(), QString * selectedFilter = 0, QFileDialog::Options options = {} );
@@ -91,6 +92,7 @@ protected:
 	QStringList m_documentFolders;
 	QString m_appPath;
 	QString m_partsPath;
+	bool m_partsPathExplicit = false;
 };
 
 #endif

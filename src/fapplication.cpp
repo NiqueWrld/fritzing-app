@@ -23,6 +23,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include "utils/misc.h"
 #include "mainwindow/mainwindow.h"
 #include "fsplashscreen.h"
+#include "utils/cloudparts.h"
 #include "version/version.h"
 #include "dialogs/prefsdialog.h"
 #include "fsvgrenderer.h"
@@ -1460,6 +1461,32 @@ int FApplication::startup()
 #endif
 
 	createUserDataStoreFolderStructures();
+
+	// Parts are not shipped with the app: fetch (or update) them from the cloud,
+	// unless a parts folder was given on the command line (-parts).
+	if (!FolderUtils::appPartsPathIsSet()) {
+		const QString cloudParts = CloudParts::ensure([this, &splash](const QString & message, double progress) {
+			splash.showMessage(QString("<font face='Lucida Grande, Tahoma, Sans Serif' size='2' color='#eaf4ed'>%1</font>").arg(message.toHtmlEscaped()),
+			                   "fritzingText", Qt::AlignLeft | Qt::AlignTop);
+			if (progress >= 0 && m_progressIndex >= 0) splash.showProgress(m_progressIndex, LoadProgressStart * progress);
+			ProcessEventBlocker::processEvents();
+		});
+		if (!cloudParts.isEmpty()) {
+			FolderUtils::setAppPartsPath(cloudParts);
+			// init() computed the core/contrib bin paths before the parts folder was known.
+			BinManager::initNames();
+		}
+		else if (!FolderUtils::getAppPartsSubFolder("core").exists()) {
+			splash.hide();
+			FMessageBox::critical(nullptr, tr("Parts library unavailable"),
+			                      tr("Fritzing downloads its parts library on first launch, but it could not be reached.\n\n"
+			                         "Connect to the internet and start Fritzing again."));
+			return -1;
+		}
+		// Put the copyright line back where the download status was.
+		splash.showMessage(QString("<font face='Lucida Grande, Tahoma, Sans Serif' size='2' color='#eaf4ed'>&#169; 2007-%1 Fritzing</font>").arg(Version::year()),
+		                   "fritzingText", Qt::AlignLeft | Qt::AlignTop);
+	}
 
 	cleanFzzs();
 

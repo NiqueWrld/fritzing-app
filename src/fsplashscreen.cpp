@@ -97,6 +97,10 @@ void FSplashScreen::showMessage(const QString &message, const QString & id, int 
 	messageThing->color = itemMessageThing->color;
 	messageThing->rect = itemMessageThing->rect;;
 	messageThing->message = message;
+	// A new message replaces the previous one in the same place (e.g. download status updates).
+	for (int i = m_messages.count() - 1; i >= 0; --i) {
+		if (m_messages.at(i)->rect == messageThing->rect) delete m_messages.takeAt(i);
+	}
 	m_messages.append(messageThing);
 	repaint();
 }

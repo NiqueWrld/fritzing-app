@@ -231,6 +231,11 @@ bool FolderUtils::setApplicationPath(const QString & path)
 	return singleton->setApplicationPath2(path);
 }
 
+bool FolderUtils::appPartsPathIsSet()
+{
+	return singleton != nullptr && singleton->m_partsPathExplicit;
+}
+
 bool FolderUtils::setAppPartsPath(const QString & path)
 {
 	if (singleton == nullptr) {
@@ -346,6 +351,7 @@ bool FolderUtils::setPartsPath2(const QString & path)
 	if (!dir.exists()) return false;
 
 	m_partsPath = dir.canonicalPath();
+	m_partsPathExplicit = true;
 	return true;
 }
 
