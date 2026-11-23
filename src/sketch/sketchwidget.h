@@ -278,6 +278,20 @@ public:
 			ViewGeometry::WireFlags skipFlag = ViewGeometry::NoFlag,
 			bool skipBuses = false);
 	virtual bool routeBothSides();
+
+	// autorouter hooks: each view (breadboard, schematic, pcb) overrides these
+	virtual bool autorouteTypePCB();
+	virtual bool autorouteAllowsJumpers();
+	virtual double getKeepout();
+	virtual void getViaSize(double & ringThickness, double & holeSize);
+	virtual QSizeF jumperItemSize();
+	virtual void ensureTraceLayersVisible();
+	virtual LayerList routingLayers(ViewLayer::ViewLayerPlacement);
+	virtual bool attachedToTopLayer(ConnectorItem *);
+	virtual bool attachedToBottomLayer(ConnectorItem *);
+	virtual double getAutorouterTraceWidth();
+	virtual const QString & traceColor(ViewLayer::ViewLayerPlacement);
+
 	virtual void changeLayerForCommand(long id, double z, ViewLayer::ViewLayerID viewLayerID);
 	void ratsnestConnect(ConnectorItem * connectorItem, bool connect);
 	void ratsnestConnect(ItemBase *, bool connect);
@@ -510,7 +524,6 @@ protected:
 	void makeRatsnestViewGeometry(ViewGeometry & viewGeometry, ConnectorItem * source, ConnectorItem * dest);
 	virtual double getTraceWidth();
 	virtual void setLastTraceWidth(double lastTraceWidth);
-	virtual const QString & traceColor(ViewLayer::ViewLayerPlacement);
 	void createTrace(Wire * fromWire, const QString & commandString, ViewGeometry::WireFlag, bool useLastWireColor);
 	bool createOneTrace(Wire * wire, ViewGeometry::WireFlag flag, bool allowAny, QList<Wire *> & done, bool useLastWireColor, QUndoCommand * parentCommand);
 	void removeWire(Wire * w, QList<ConnectorItem *> & ends, QList<Wire *> & done, QUndoCommand * parentCommand);

@@ -149,7 +149,7 @@ struct RouteThing {
 };
 
 struct TraceThing {
-	QList<TraceWire *> newTraces;
+	QList<Wire *> newTraces;
 	QList<Via *> newVias;
 	QList<JumperItem *> newJumperItems;
 	QList<SymbolPaletteItem *> newNetLabels;
@@ -179,7 +179,7 @@ class MazeRouter : public Autorouter
 	Q_OBJECT
 
 public:
-	MazeRouter(class PCBSketchWidget *, QGraphicsItem * board, bool adjustIf);
+	MazeRouter(class SketchWidget *, QGraphicsItem * board, bool adjustIf);
 	~MazeRouter();
 
 	void start();
@@ -229,8 +229,8 @@ protected:
 	GridPoint lookForJumper(GridPoint initial, GridValue targetValue, QPoint targetLocation);
 	void expandOneJ(GridPoint & gridPoint, std::priority_queue<GridPoint> & pq, int dx, int dy, int dz, GridValue targetValue, QPoint targetLocation, QSet<int> & already);
 	void removeOffBoardAnd(bool isPCBType, bool removeSingletons, bool bothSides);
-	void optimizeTraces(QList<int> & order, QMultiHash<int, QList< QPointer<TraceWire> > > &, QMultiHash<int, Via *> &, QMultiHash<int, JumperItem *> &, QMultiHash<int, SymbolPaletteItem *> &, NetList &, ConnectionThing &);
-	void reducePoints(QList<QPointF> & points, QPointF topLeft, QList<TraceWire *> & bundle, int startIndex, int endIndex, ConnectionThing &, int netIndex, ViewLayer::ViewLayerPlacement);
+	void optimizeTraces(QList<int> & order, QMultiHash<int, QList< QPointer<Wire> > > &, QMultiHash<int, Via *> &, QMultiHash<int, JumperItem *> &, QMultiHash<int, SymbolPaletteItem *> &, NetList &, ConnectionThing &);
+	void reducePoints(QList<QPointF> & points, QPointF topLeft, QList<Wire *> & bundle, int startIndex, int endIndex, ConnectionThing &, int netIndex, ViewLayer::ViewLayerPlacement);
 
 public Q_SLOTS:
 	void incCommandProgress();

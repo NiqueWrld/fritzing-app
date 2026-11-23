@@ -50,6 +50,7 @@ public:
 	void showEvent(QShowEvent * event);
 	void initWire(Wire *, int penWidth);
 	virtual bool autorouteTypePCB();
+	bool autorouteAllowsJumpers() override { return true; }
 	virtual double getKeepout();
 	void setKeepout(double mils);
 	void resetKeepout();

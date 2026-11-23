@@ -464,6 +464,7 @@ void MainWindow::init(ReferenceModel *referenceModel, bool lockFiles) {
 	initExercisesView();
 	initSketchWidgets(true); // 14%
 	initProgrammingWidget();
+	initCopilotView();
 
 	m_simulator = new Simulator(this);
 
@@ -1427,7 +1428,9 @@ QList<QWidget*> MainWindow::getButtonsForView(ViewLayer::ViewID viewId) {
 	retval << createRotateButton(parent);
 	switch (viewId) {
 	case ViewLayer::BreadboardView:
-		retval << createFlipButton(parent) << createRoutingStatusLabel(parent)
+		retval << createFlipButton(parent)
+		       << createAutorouteButton(parent)
+		       << createRoutingStatusLabel(parent)
 			   << createSimulationButton(parent);
 		break;
 	case ViewLayer::SchematicView:

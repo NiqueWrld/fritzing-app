@@ -13,6 +13,7 @@
 # along with Fritzing. If not, see <http://www.gnu.org/licenses/>.
 # ********************************************************************/
 HEADERS += \
+	src/copilot/copilotview.h \
 	src/mainwindow/fprobeactions.h \
     src/mainwindow/fdockwidget.h \
     src/mainwindow/fritzingwindow.h \
@@ -25,6 +26,8 @@ HEADERS += \
     src/mainwindow/fprobefocuswidget.h \
 
 SOURCES += \
+	src/copilot/copilotview.cpp \
+	src/mainwindow/mainwindow_copilot.cpp \
 	src/mainwindow/fprobeactions.cpp \
     src/mainwindow/fdockwidget.cpp \
     src/mainwindow/fritzingwindow.cpp \

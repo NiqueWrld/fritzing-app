@@ -9586,6 +9586,50 @@ bool SketchWidget::routeBothSides() {
 	return false;
 }
 
+// Default autorouter hooks: a single-layer view that routes plain wires
+// with no jumpers or vias. PCB and schematic views override these.
+bool SketchWidget::autorouteTypePCB() {
+	return false;
+}
+
+bool SketchWidget::autorouteAllowsJumpers() {
+	return false;
+}
+
+double SketchWidget::getKeepout() {
+	return 0.1 * GraphicsUtils::SVGDPI;
+}
+
+void SketchWidget::getViaSize(double & ringThickness, double & holeSize) {
+	ringThickness = holeSize = 0;
+}
+
+QSizeF SketchWidget::jumperItemSize() {
+	return QSizeF(0, 0);
+}
+
+void SketchWidget::ensureTraceLayersVisible() {
+	ensureLayerVisible(m_wireViewLayerID);
+}
+
+LayerList SketchWidget::routingLayers(ViewLayer::ViewLayerPlacement) {
+	LayerList layerList;
+	layerList << m_connectorViewLayerID;
+	return layerList;
+}
+
+bool SketchWidget::attachedToTopLayer(ConnectorItem *) {
+	return false;
+}
+
+bool SketchWidget::attachedToBottomLayer(ConnectorItem *) {
+	return true;
+}
+
+double SketchWidget::getAutorouterTraceWidth() {
+	return getTraceWidth();
+}
+
 
 void SketchWidget::copyBoundingRectsSlot(QHash<QString, QRectF> & boundingRects)
 {

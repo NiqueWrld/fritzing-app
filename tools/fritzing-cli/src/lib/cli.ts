@@ -249,7 +249,7 @@ export async function listRunningFritzingInstances(): Promise<FritzingInstance[]
   }
 
   const script = [
-    "$processes = Get-CimInstance Win32_Process -Filter \"Name = 'Fritzing.exe' OR Name = 'Fritzing-MCP.exe'\" | ForEach-Object {",
+    "$processes = Get-CimInstance Win32_Process -Filter \"Name LIKE 'Fritzing%.exe'\" | ForEach-Object {",
     '  [PSCustomObject]@{',
     '    processId = $_.ProcessId',
     '    executablePath = $_.ExecutablePath',

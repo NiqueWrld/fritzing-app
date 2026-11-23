@@ -19,7 +19,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 ********************************************************************/
 
 #include "autorouter.h"
-#include "../sketch/pcbsketchwidget.h"
+#include "../sketch/sketchwidget.h"
 #include "../debugdialog.h"
 #include "../items/symbolpaletteitem.h"
 #include "../items/virtualwire.h"
@@ -37,7 +37,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 
 const QString Autorouter::MaxCyclesName("cmrouter/maxcycles");
 
-Autorouter::Autorouter(PCBSketchWidget * sketchWidget) : m_sketchWidget(sketchWidget)
+Autorouter::Autorouter(SketchWidget * sketchWidget) : m_sketchWidget(sketchWidget)
 {
 }
 
@@ -54,7 +54,7 @@ void Autorouter::updateRoutingStatus() {
 	m_sketchWidget->updateRoutingStatus(routingStatus, true);
 }
 
-TraceWire * Autorouter::drawOneTrace(QPointF fromPos, QPointF toPos, double width, ViewLayer::ViewLayerPlacement viewLayerPlacement)
+Wire * Autorouter::drawOneTrace(QPointF fromPos, QPointF toPos, double width, ViewLayer::ViewLayerPlacement viewLayerPlacement)
 {
 	//DebugDialog::debug(QString("trace %1,%2 %3,%4").arg(fromPos.x()).arg(fromPos.y()).arg(toPos.x()).arg(toPos.y()));
 #ifndef QT_NO_DEBUG
@@ -81,14 +81,14 @@ TraceWire * Autorouter::drawOneTrace(QPointF fromPos, QPointF toPos, double widt
 
 	// addItem calls trace->setSelected(true) so unselect it (TODO: this may no longer be necessary)
 	trace->setSelected(false);
-	auto *traceWire = dynamic_cast<TraceWire *>(trace);
+	auto *traceWire = dynamic_cast<Wire *>(trace);
 	if (traceWire == nullptr) {
 		DebugDialog::debug("autorouter unable to draw one trace as trace");
 		return nullptr;
 	}
 
 
-	m_sketchWidget->setClipEnds(traceWire, false);
+	if (auto * cw = qobject_cast<ClipableWire *>(traceWire)) m_sketchWidget->setClipEnds(cw, false);
 	traceWire->setColorString(m_sketchWidget->traceColor(viewLayerPlacement), 1.0, false);
 	traceWire->setWireWidth(width, m_sketchWidget, m_sketchWidget->getWireStrokeWidth(traceWire, width));
 
@@ -135,7 +135,7 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 			Q_FOREACH (ConnectorItem * ci, jumperItem->connector0()->connectedToItems()) both.append(ci);
 			Q_FOREACH (ConnectorItem * ci, jumperItem->connector1()->connectedToItems()) both.append(ci);
 			Q_FOREACH (ConnectorItem * connectorItem, both) {
-				auto *w = qobject_cast<TraceWire *>(connectorItem->attachedTo());
+				auto *w = qobject_cast<Wire *>(connectorItem->attachedTo());
 				if (w == nullptr) continue;
 				if (!w->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 
@@ -163,7 +163,7 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 			Q_FOREACH (ConnectorItem * ci, via->connectorItem()->connectedToItems()) both.append(ci);
 			Q_FOREACH (ConnectorItem * ci, via->connectorItem()->getCrossLayerConnectorItem()->connectedToItems()) both.append(ci);
 			Q_FOREACH (ConnectorItem * connectorItem, both) {
-				auto *w = qobject_cast<TraceWire *>(connectorItem->attachedTo());
+				auto *w = qobject_cast<Wire *>(connectorItem->attachedTo());
 				if (w == nullptr) continue;
 				if (!w->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 
@@ -192,7 +192,7 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 
 			// deal with the traces connecting the netlabel to the part
 			Q_FOREACH (ConnectorItem * connectorItem, netLabel->connector0()->connectedToItems()) {
-				auto *w = qobject_cast<TraceWire *>(connectorItem->attachedTo());
+				auto *w = qobject_cast<Wire *>(connectorItem->attachedTo());
 				if (w == nullptr) continue;
 				if (!w->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 
@@ -207,9 +207,9 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 		}
 	}
 
-	QList<TraceWire *> visited;
+	QList<Wire *> visited;
 	Q_FOREACH (QGraphicsItem * item, collidingItems) {
-		auto *traceWire = dynamic_cast<TraceWire *>(item);
+		auto *traceWire = dynamic_cast<Wire *>(item);
 		if (traceWire == nullptr) continue;
 		if (!traceWire->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 		if (traceWire->getAutoroutable()) continue;
@@ -219,7 +219,7 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 		QList<ConnectorItem *> ends;
 		traceWire->collectChained(wires, ends);
 		Q_FOREACH (Wire * wire, wires) {
-			visited << qobject_cast<TraceWire *>(wire);
+			visited << qobject_cast<Wire *>(wire);
 			if (wire->getAutoroutable()) {
 				wire->setAutoroutable(false);
 			}
@@ -227,7 +227,7 @@ void Autorouter::initUndo(QUndoCommand * parentCommand)
 	}
 
 	Q_FOREACH (QGraphicsItem * item, collidingItems) {
-		auto *traceWire = dynamic_cast<TraceWire *>(item);
+		auto *traceWire = dynamic_cast<Wire *>(item);
 		if (traceWire == nullptr) continue;
 		if (!traceWire->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 		if (!traceWire->getAutoroutable()) continue;
@@ -259,7 +259,7 @@ void Autorouter::addUndoConnection(bool connect, JumperItem * jumperItem, QUndoC
 	addUndoConnection(connect, jumperItem->connector1(), BaseCommand::CrossView, parentCommand);
 }
 
-void Autorouter::addUndoConnection(bool connect, TraceWire * traceWire, QUndoCommand * parentCommand) {
+void Autorouter::addUndoConnection(bool connect, Wire * traceWire, QUndoCommand * parentCommand) {
 	addUndoConnection(connect, traceWire->connector0(), BaseCommand::CrossView, parentCommand);
 	addUndoConnection(connect, traceWire->connector1(), BaseCommand::CrossView, parentCommand);
 }
@@ -315,7 +315,7 @@ void Autorouter::clearTracesAndJumpers() {
 			}
 		}
 
-		auto *traceWire = dynamic_cast<TraceWire *>(item);
+		auto *traceWire = dynamic_cast<Wire *>(item);
 		if (traceWire != nullptr) {
 			if (traceWire->isTraceType(m_sketchWidget->getTraceFlag()) && traceWire->getAutoroutable()) {
 				toDelete.append(traceWire);
@@ -336,19 +336,49 @@ void Autorouter::doCancel(QUndoCommand * parentCommand) {
 	cleanUpNets();
 }
 
+// Breadboard only: pick a wire colour from the pin names on its net.
+// Returns "black" for ground nets, "red" for power nets, or empty to keep the default.
+QString Autorouter::powerNetColor(Wire * wire) {
+	QList<Wire *> chained;
+	QList<ConnectorItem *> ends;
+	wire->collectChained(chained, ends);
+	QList<ConnectorItem *> net(ends);
+	ConnectorItem::collectEqualPotential(net, false, ViewGeometry::RatsnestFlag);
+
+	static const QStringList powerNames = {
+		"vcc", "vdd", "vin", "v+", "5v", "+5v", "3v3", "+3v3", "3.3v", "+3.3v",
+		"vbat", "vbus", "pwr", "power", "12v", "+12v", "9v", "+9v"
+	};
+	bool power = false;
+	Q_FOREACH (ConnectorItem * c, net) {
+		if (c == nullptr || c->attachedTo() == nullptr) continue;
+		if (qobject_cast<Wire *>(c->attachedTo()->layerKinChief()) != nullptr) continue;
+		QString name = c->connectorSharedName().trimmed().toLower();
+		if (name.startsWith("gnd") || name == "ground" || name == "vss" || name == "0v" || name == "v-") {
+			return "black";
+		}
+		if (powerNames.contains(name) || name.startsWith("vcc")) power = true;
+	}
+	return power ? QString("red") : QString();
+}
+
 void Autorouter::addToUndo(QUndoCommand * parentCommand)
 {
-	QList<TraceWire *> wires;
+	QList<Wire *> wires;
 	QList<JumperItem *> jumperItems;
 	QList<Via *> vias;
 	QList<SymbolPaletteItem *> netLabels;
 	Q_FOREACH (QGraphicsItem * item, (m_board  == nullptr) ? m_sketchWidget->scene()->items() : m_sketchWidget->scene()->collidingItems(m_board)) {
-		auto *wire = dynamic_cast<TraceWire *>(item);
+		auto *wire = dynamic_cast<Wire *>(item);
 		if (wire != nullptr) {
 			if (!wire->getAutoroutable()) continue;
 			if (!wire->isTraceType(m_sketchWidget->getTraceFlag())) continue;
 
-			m_sketchWidget->setClipEnds(wire, true);
+			if (auto * cw = qobject_cast<ClipableWire *>(wire)) m_sketchWidget->setClipEnds(cw, true);
+			if (!m_pcbType && m_sketchWidget->getTraceFlag() == ViewGeometry::NormalFlag) {
+				QString color = powerNetColor(wire);
+				if (!color.isEmpty()) wire->setColorString(color, 1.0, false);
+			}
 			wire->update();
 			addWireToUndo(wire, parentCommand);
 			wires.append(wire);
@@ -404,7 +434,7 @@ void Autorouter::addToUndo(QUndoCommand * parentCommand)
 		}
 	}
 
-	Q_FOREACH (TraceWire * traceWire, wires) {
+	Q_FOREACH (Wire * traceWire, wires) {
 		//traceWire->debugInfo("trace");
 		addUndoConnection(true, traceWire, parentCommand);
 	}

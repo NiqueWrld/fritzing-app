@@ -30,6 +30,9 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <QSettings>
 #include <QDesktopServices>
 #include <QMimeData>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "mainwindow.h"
 #include "../debugdialog.h"
@@ -1680,6 +1683,7 @@ void MainWindow::createTraceMenus()
 {
 	m_pcbTraceMenu = menuBar()->addMenu(tr("&Routing"));
 	m_pcbTraceMenu->addAction(m_newAutorouteAct);
+	m_pcbTraceMenu->addAction(m_copyWiringJsonAct);
 	m_pcbTraceMenu->addAction(m_newDesignRulesCheckAct);
 	m_pcbTraceMenu->addAction(m_autorouterSettingsAct);
 	m_pcbTraceMenu->addAction(m_fabQuoteAct);
@@ -1718,6 +1722,7 @@ void MainWindow::createTraceMenus()
 
 	m_schematicTraceMenu = menuBar()->addMenu(tr("&Routing"));
 	m_schematicTraceMenu->addAction(m_newAutorouteAct);
+	m_schematicTraceMenu->addAction(m_copyWiringJsonAct);
 	m_schematicTraceMenu->addAction(m_excludeFromAutorouteAct);
 	m_schematicTraceMenu->addAction(m_showUnroutedAct);
 	m_schematicTraceMenu->addAction(m_selectAllTracesAct);
@@ -1730,6 +1735,9 @@ void MainWindow::createTraceMenus()
 #endif
 
 	m_breadboardTraceMenu = menuBar()->addMenu(tr("&Routing"));
+	m_breadboardTraceMenu->addAction(m_newAutorouteAct);
+	m_breadboardTraceMenu->addAction(m_copyWiringJsonAct);
+	m_breadboardTraceMenu->addAction(m_colorPowerWiresAct);
 	m_breadboardTraceMenu->addAction(m_showUnroutedAct);
 	m_breadboardTraceMenu->addAction(m_selectAllWiresAct);
 
@@ -2936,6 +2944,14 @@ void MainWindow::createTraceMenuActions() {
 	m_selectAllWiresAct->setStatusTip(tr("Select all wires"));
 	connect(m_selectAllWiresAct, SIGNAL(triggered()), this, SLOT(selectAllTraces()));
 
+	m_colorPowerWiresAct = new QAction(tr("Color Power Wires"), this);
+	m_colorPowerWiresAct->setStatusTip(tr("Make VCC wires red and GND wires black"));
+	connect(m_colorPowerWiresAct, SIGNAL(triggered()), this, SLOT(colorPowerWires()));
+
+	m_copyWiringJsonAct = new QAction(tr("Copy Wiring as JSON"), this);
+	m_copyWiringJsonAct->setStatusTip(tr("Copy all wires in this view to the clipboard as JSON"));
+	connect(m_copyWiringJsonAct, SIGNAL(triggered()), this, SLOT(copyWiringAsJson()));
+
 	m_selectAllCopperFillAct = new QAction(tr("Select All CopperFill"), this);
 	m_selectAllCopperFillAct->setStatusTip(tr("Select all copper fill items"));
 	connect(m_selectAllCopperFillAct, SIGNAL(triggered()), this, SLOT(selectAllCopperFill()));
@@ -3119,13 +3135,15 @@ void MainWindow::createOrderFabAct() {
 
 
 void MainWindow::newAutoroute() {
-	auto * pcbSketchWidget = qobject_cast<PCBSketchWidget *>(m_currentGraphicsView);
+	// one autoroute entry point for breadboard, schematic and PCB views
+	SketchWidget * pcbSketchWidget = m_currentGraphicsView;
 	if (pcbSketchWidget == nullptr) return;
 
 	ItemBase * board = nullptr;
-	if (pcbSketchWidget->autorouteTypePCB()) {
+	auto * realPcbSketchWidget = qobject_cast<PCBSketchWidget *>(pcbSketchWidget);
+	if (realPcbSketchWidget != nullptr && realPcbSketchWidget->autorouteTypePCB()) {
 		int boardCount;
-		board = pcbSketchWidget->findSelectedBoard(boardCount);
+		board = realPcbSketchWidget->findSelectedBoard(boardCount);
 		if (boardCount == 0) {
 			QMessageBox::critical(this, tr("Fritzing", "dialog title"),
 			                      tr("Your sketch does not have a board yet!  Please add a PCB in order to use the autorouter."));
@@ -3183,15 +3201,153 @@ void MainWindow::newAutoroute() {
 
 	delete autorouter;
 
-	pcbSketchWidget->setLayerActive(ViewLayer::Copper1, copper1Active);
-	pcbSketchWidget->setLayerActive(ViewLayer::Silkscreen1, copper1Active);
-	pcbSketchWidget->setLayerActive(ViewLayer::Copper0, copper0Active);
-	pcbSketchWidget->setLayerActive(ViewLayer::Silkscreen0, copper0Active);
+	if (pcbSketchWidget->autorouteTypePCB()) {
+		pcbSketchWidget->setLayerActive(ViewLayer::Copper1, copper1Active);
+		pcbSketchWidget->setLayerActive(ViewLayer::Silkscreen1, copper1Active);
+		pcbSketchWidget->setLayerActive(ViewLayer::Copper0, copper0Active);
+		pcbSketchWidget->setLayerActive(ViewLayer::Silkscreen0, copper0Active);
+	}
 	updateActiveLayerButtons();
 	ProcessEventBlocker::unblock();
 	RoutingStatus routingStatus;
 	routingStatus.zero();
 	Q_EMIT pcbSketchWidget->routingStatusSignal(pcbSketchWidget, routingStatus);
+}
+
+static double round2(double v) {
+	return qRound(v * 100.0) / 100.0;
+}
+
+static QJsonObject pointJson(QPointF p) {
+	return QJsonObject{{"x", round2(p.x())}, {"y", round2(p.y())}};
+}
+
+// The part pins (not other wire segments) that this wire end is plugged into.
+static QJsonArray wireEndJson(ConnectorItem * end) {
+	QJsonArray result;
+	if (end == nullptr) return result;
+	Q_FOREACH (ConnectorItem * to, end->connectedToItems()) {
+		if (to == nullptr || to->attachedTo() == nullptr) continue;
+		ItemBase * part = to->attachedTo()->layerKinChief();
+		if (qobject_cast<Wire *>(part) != nullptr) continue;
+		QJsonObject o;
+		o["partId"] = QString::number(part->id());
+		o["part"] = part->instanceTitle();
+		o["connectorId"] = to->connectorSharedID();
+		o["connector"] = to->connectorSharedName();
+		result.append(o);
+	}
+	return result;
+}
+
+static bool touchesOtherSegment(ConnectorItem * c, const QList<Wire *> & chain) {
+	Q_FOREACH (ConnectorItem * to, c->connectedToItems()) {
+		if (to == nullptr) continue;
+		auto * w = qobject_cast<Wire *>(to->attachedTo());
+		if (w != nullptr && chain.contains(w)) return true;
+	}
+	return false;
+}
+
+void MainWindow::copyWiringAsJson() {
+	if (m_currentGraphicsView == nullptr) return;
+
+	QString viewName = "breadboard";
+	if (m_currentGraphicsView == m_schematicGraphicsView) viewName = "schematic";
+	else if (m_currentGraphicsView == m_pcbGraphicsView) viewName = "pcb";
+
+	QSet<Wire *> visited;
+	QJsonArray wires;
+	Q_FOREACH (QGraphicsItem * item, m_currentGraphicsView->scene()->items()) {
+		auto * wire = dynamic_cast<Wire *>(item);
+		if (wire == nullptr || visited.contains(wire)) continue;
+		if (wire->hasFlag(ViewGeometry::RatsnestFlag)) continue;
+		if (!wire->isEverVisible()) continue;
+
+		// a wire with bendpoints is a chain of segments: export it as one wire
+		QList<Wire *> chain;
+		QList<ConnectorItem *> ends;
+		wire->collectChained(chain, ends);
+		Q_FOREACH (Wire * w, chain) visited.insert(w);
+
+		// find a segment end that doesn't join another segment, then walk the chain
+		Wire * current = chain.first();
+		ConnectorItem * freeEnd = current->connector0();
+		Q_FOREACH (Wire * w, chain) {
+			if (!touchesOtherSegment(w->connector0(), chain)) { current = w; freeEnd = w->connector0(); break; }
+			if (!touchesOtherSegment(w->connector1(), chain)) { current = w; freeEnd = w->connector1(); break; }
+		}
+
+		ConnectorItem * firstEnd = freeEnd;
+		ConnectorItem * lastEnd = freeEnd;
+		QJsonArray points;
+		points.append(pointJson(freeEnd->sceneAdjustedTerminalPoint(nullptr)));
+		QSet<Wire *> walked;
+		while (current != nullptr && !walked.contains(current)) {
+			walked.insert(current);
+			ConnectorItem * other = (freeEnd == current->connector0()) ? current->connector1() : current->connector0();
+			points.append(pointJson(other->sceneAdjustedTerminalPoint(nullptr)));
+			lastEnd = other;
+
+			Wire * next = nullptr;
+			ConnectorItem * nextEnd = nullptr;
+			Q_FOREACH (ConnectorItem * to, other->connectedToItems()) {
+				if (to == nullptr) continue;
+				auto * w = qobject_cast<Wire *>(to->attachedTo());
+				if (w != nullptr && chain.contains(w) && !walked.contains(w)) { next = w; nextEnd = to; break; }
+			}
+			current = next;
+			freeEnd = nextEnd;
+		}
+
+		QJsonArray ids;
+		Q_FOREACH (Wire * w, chain) ids.append(QString::number(w->id()));
+
+		QJsonObject w;
+		w["id"] = QString::number(wire->id());
+		w["segmentIds"] = ids;
+		w["color"] = wire->colorString();
+		w["hex"] = wire->hexString();
+		w["autoroutable"] = wire->getAutoroutable();
+		w["points"] = points;
+		w["from"] = wireEndJson(firstEnd);
+		w["to"] = wireEndJson(lastEnd);
+		wires.append(w);
+	}
+
+	QJsonObject root;
+	root["view"] = viewName;
+	root["wireCount"] = wires.count();
+	root["wires"] = wires;
+
+	QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
+	statusBar()->showMessage(tr("Copied %n wire(s) as JSON", "", wires.count()), 3000);
+}
+
+void MainWindow::colorPowerWires() {
+	if (m_currentGraphicsView == nullptr || m_currentGraphicsView != m_breadboardGraphicsView) return;
+
+	auto * parentCommand = new QUndoCommand(tr("Color power wires"));
+	int changed = 0;
+	Q_FOREACH (QGraphicsItem * item, m_currentGraphicsView->scene()->items()) {
+		auto * wire = dynamic_cast<Wire *>(item);
+		if (wire == nullptr) continue;
+		if (wire->hasFlag(ViewGeometry::RatsnestFlag)) continue;
+
+		QString color = Autorouter::powerNetColor(wire);
+		if (color.isEmpty() || color == wire->colorString()) continue;
+
+		new WireColorChangeCommand(m_currentGraphicsView, wire->id(), wire->colorString(), color, wire->opacity(), wire->opacity(), parentCommand);
+		changed++;
+	}
+
+	if (changed == 0) {
+		delete parentCommand;
+		statusBar()->showMessage(tr("No power or ground wires to recolor"), 3000);
+		return;
+	}
+	m_undoStack->push(parentCommand);
+	statusBar()->showMessage(tr("Recolored %n wire(s)", "", changed), 3000);
 }
 
 void MainWindow::createTrace() {

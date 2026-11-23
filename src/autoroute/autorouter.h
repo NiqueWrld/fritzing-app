@@ -36,7 +36,7 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include "../connectors/connectoritem.h"
 #include "../commands.h"
 
-class PCBSketchWidget;
+class SketchWidget;
 class SymbolPaletteItem;
 class JumperItem;
 class Via;
@@ -45,10 +45,13 @@ class Autorouter : public QObject
 	Q_OBJECT
 
 public:
-	Autorouter(PCBSketchWidget *);
+	Autorouter(SketchWidget *);
 	virtual ~Autorouter() = default;
 
 	virtual void start() = 0;
+
+	// "red" for power nets, "black" for ground nets, empty otherwise
+	static QString powerNetColor(class Wire *);
 
 public:
 	static const QString MaxCyclesName;
@@ -57,12 +60,12 @@ public:
 protected:
 	virtual void cleanUpNets();
 	virtual void updateRoutingStatus();
-	virtual class TraceWire * drawOneTrace(QPointF fromPos, QPointF toPos, double width, ViewLayer::ViewLayerPlacement);
+	virtual class Wire * drawOneTrace(QPointF fromPos, QPointF toPos, double width, ViewLayer::ViewLayerPlacement);
 	void initUndo(QUndoCommand * parentCommand);
 	void addUndoConnection(bool connect, SymbolPaletteItem *, QUndoCommand * parentCommand);
 	void addUndoConnection(bool connect, JumperItem *, QUndoCommand * parentCommand);
 	void addUndoConnection(bool connect, Via *, QUndoCommand * parentCommand);
-	void addUndoConnection(bool connect, TraceWire *, QUndoCommand * parentCommand);
+	void addUndoConnection(bool connect, Wire *, QUndoCommand * parentCommand);
 	void addUndoConnection(bool connect, ConnectorItem *, BaseCommand::CrossViewType, QUndoCommand * parentCommand);
 	void restoreOriginalState(QUndoCommand * parentCommand);
 	void doCancel(QUndoCommand * parentCommand);
@@ -90,7 +93,7 @@ Q_SIGNALS:
 	void disableButtons();
 
 protected:
-	PCBSketchWidget * m_sketchWidget = nullptr;
+	SketchWidget * m_sketchWidget = nullptr;
 	QList< QList<ConnectorItem*>* > m_allPartConnectorItems;
 	bool m_cancelled = false;
 	bool m_cancelTrace = false;
@@ -104,6 +107,7 @@ protected:
 	double m_keepoutPixels = 0.0;
 	QRectF m_maxRect;
 	bool m_pcbType = false;
+	bool m_jumpersAllowed = true;
 };
 
 #endif

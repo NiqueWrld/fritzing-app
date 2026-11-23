@@ -412,6 +412,8 @@ protected Q_SLOTS:
 	void updateItemMenu();
 
 	void newAutoroute();
+	void copyWiringAsJson();
+	void colorPowerWires();
 	void orderFab();
 	void activeLayerTop(bool showMessage = true);
 	void activeLayerBottom(bool showMessage = true);
@@ -659,6 +661,8 @@ protected:
 	virtual void initSketchWidgets(bool withIcons);
 	virtual void initWelcomeView();
 	virtual void initExercisesView();
+	virtual void initCopilotView();
+	class QJsonObject copilotExecute(const class QJsonObject & action);
 	virtual void initDock();
 	virtual void initMenus();
 	virtual void moreInitDock();
@@ -930,6 +934,8 @@ protected:
 	QMenu *m_schematicTraceMenu = nullptr;
 	QMenu *m_breadboardTraceMenu = nullptr;
 	QAction *m_newAutorouteAct = nullptr;
+	QAction *m_copyWiringJsonAct = nullptr;
+	QAction *m_colorPowerWiresAct = nullptr;
 	QAction *m_orderFabAct = nullptr;
 	QAction *m_activeLayerTopAct = nullptr;
 	QAction *m_activeLayerBottomAct = nullptr;
