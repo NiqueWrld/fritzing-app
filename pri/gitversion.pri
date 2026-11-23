@@ -20,17 +20,17 @@ $$(CI) {
 GIT_DATE = $$system($$BASE_GIT_COMMAND show --no-patch --no-notes --pretty='%cd' HEAD --date=iso-strict 2> $$NULL_DEVICE)
 
 # Here we process the build date and time
-win32 {
+equals(QMAKE_HOST.os, Windows) {
     # Try to squeeze something ISO-8601-ish out of windows
     BUILD_DATE = $$system( powershell (Get-Date -Format "o") )
 }
 
-macx {
+else:macx {
     # MacOS uses BSD date rather than GNU date. 
     BUILD_DATE = $$system( date +%Y-%m-%dT%H:%M:%S%z )
 }
 
-!win32:!macx {
+else {
     BUILD_DATE = $$system( date --iso-8601=seconds )
 }
 

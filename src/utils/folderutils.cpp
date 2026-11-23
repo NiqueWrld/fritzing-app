@@ -41,6 +41,61 @@ along with Fritzing.  If not, see <http://www.gnu.org/licenses/>.
 #include <quazip/quazip.h>
 #include <quazip/quazipfile.h>
 
+#ifdef Q_OS_ANDROID
+#include <quazip/JlCompress.h>
+
+namespace {
+
+// On Android the read-only data (fritzing-parts, help, sketches, translations)
+// ships inside the APK as assets:/fritzing-data.zip, staged at build time by
+// tools/android/stage-assets.ps1. It is extracted to app storage on first launch,
+// and again whenever the bundled version stamp changes (app update).
+QString ensureAndroidDataExtracted() {
+	const QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/fritzing-data";
+	const QString stampName = "fritzing-data.version";
+
+	QFile bundledStamp("assets:/" + stampName);
+	if (!bundledStamp.open(QIODevice::ReadOnly)) {
+		DebugDialog::debug("Android: no bundled fritzing-data in APK assets", DebugDialog::Warning);
+		return dataPath;
+	}
+	const QByteArray bundledVersion = bundledStamp.readAll().trimmed();
+
+	QFile installedStamp(dataPath + "/" + stampName);
+	if (installedStamp.open(QIODevice::ReadOnly) && installedStamp.readAll().trimmed() == bundledVersion) {
+		return dataPath;
+	}
+	installedStamp.close();
+
+	DebugDialog::debug(QString("Android: extracting bundled data %1 to %2").arg(QString::fromUtf8(bundledVersion), dataPath), DebugDialog::Info);
+	QDir(dataPath).removeRecursively();
+	QDir().mkpath(dataPath);
+
+	// QuaZip needs a real file, so copy the zip out of the APK first.
+	const QString zipPath = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/fritzing-data.zip";
+	QDir().mkpath(QFileInfo(zipPath).absolutePath());
+	QFile::remove(zipPath);
+	if (!QFile::copy("assets:/fritzing-data.zip", zipPath)) {
+		DebugDialog::debug("Android: could not copy fritzing-data.zip out of the APK", DebugDialog::Error);
+		return dataPath;
+	}
+	const QStringList extracted = JlCompress::extractDir(zipPath, dataPath);
+	QFile::remove(zipPath);
+	if (extracted.isEmpty()) {
+		DebugDialog::debug("Android: extracting fritzing-data.zip failed", DebugDialog::Error);
+		return dataPath;
+	}
+
+	// Write the stamp last, so an interrupted extraction is retried next launch.
+	if (installedStamp.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		installedStamp.write(bundledVersion);
+	}
+	return dataPath;
+}
+
+}
+#endif
+
 
 FolderUtils* FolderUtils::singleton = nullptr;
 QString FolderUtils::m_openSaveFolder = "";
@@ -218,7 +273,9 @@ const QString FolderUtils::applicationDirPath() {
 	}
 
 
-#ifdef Q_OS_WIN
+#if defined(Q_OS_ANDROID)
+	m_appPath = ensureAndroidDataExtracted();
+#elif defined(Q_OS_WIN)
 	m_appPath = QCoreApplication::applicationDirPath();
 #else
 	// look in standard Fritzing location (applicationDirPath and parent folders) then in standard linux locations

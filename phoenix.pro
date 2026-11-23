@@ -32,7 +32,7 @@ unix {
     QMAKE_CXXFLAGS_RELEASE += -O3
 }
 
-unix:!macx {
+unix:!macx:!android {
     CONFIG += link_pkgconfig
 }
 
@@ -95,7 +95,7 @@ macx {
     LIBS += -liconv
     QMAKE_APPLE_DEVICE_ARCHS = x86_64 arm64
 }
-unix {
+unix:!android {
     !macx { # unix is defined on mac
         HARDWARE_PLATFORM = $$system(uname -m)
         contains(HARDWARE_PLATFORM, x86_64)|contains(HARDWARE_PLATFORM, aarch64) {
@@ -171,11 +171,11 @@ QT += concurrent core gui network printsupport serialport sql svg widgets xml sv
 RC_FILE = fritzing.rc
 RESOURCES += phoenixresources.qrc
 
-include(pri/openssl3.pri)
-include(pri/libgit2detect.pri)
+!android: include(pri/openssl3.pri)
+!android: include(pri/libgit2detect.pri)
 include(pri/boostdetect.pri)
 include(pri/spicedetect.pri)
-include(pri/quazipdetect.pri)
+!android: include(pri/quazipdetect.pri)
 include(pri/svgppdetect.pri)
 include(pri/kitchensink.pri)
 include(pri/mainwindow.pri)
@@ -201,7 +201,8 @@ include(pri/program.pri)
 include(pri/testing.pri)
 include(pri/simulation.pri)
 include(test/version.pri)
-include(pri/clipper1detect.pri)
+!android: include(pri/clipper1detect.pri)
+android: include(pri/android.pri)
 
 TARGET = Fritzing
 TEMPLATE = app
